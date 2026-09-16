@@ -1,0 +1,64 @@
+<!--
+  Settings.html
+  Configurações. Os valores aceitos são os mesmos validados em
+  SettingsService.gs; o backend rejeita qualquer outro.
+-->
+<section id="screen-settings" class="screen" aria-labelledby="settingsTitle">
+  <div>
+    <header class="cabecalho-tela">
+      <p class="sobretitulo">Seu jeito de jogar</p>
+      <h2 class="titulo titulo-tela" id="settingsTitle">Configurações</h2>
+      <p class="subtitulo">As preferências acompanham sua conta.</p>
+    </header>
+
+    <form id="cfgForm" aria-describedby="cfgAviso" aria-busy="false">
+      <fieldset class="grupo-config">
+        <legend>Jogabilidade</legend>
+        <div class="campo">
+          <label for="cfgDificuldade">Dificuldade</label>
+          <select id="cfgDificuldade">
+            <option value="easy">Fácil — mais controle</option>
+            <option value="normal">Normal — experiência equilibrada</option>
+            <option value="hard">Difícil — maior multiplicador</option>
+          </select>
+        </div>
+
+        <div class="campo">
+          <label for="cfgControles">Controle principal</label>
+          <select id="cfgControles">
+            <option value="touch">Toque na tela</option>
+            <option value="keyboard">Teclado</option>
+          </select>
+        </div>
+
+        <label class="opcao-check" for="cfgTutorial">
+          <input id="cfgTutorial" type="checkbox">
+          <span><b>Mostrar lembrete de controles</b>
+            <small>Exibe uma dica curta ao começar cada voo.</small></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="grupo-config">
+        <legend>Áudio</legend>
+        <div class="campo">
+          <label for="cfgMusica">Música <output id="cfgMusicaValor">60%</output></label>
+          <input id="cfgMusica" type="range" min="0" max="100" step="5">
+        </div>
+
+        <div class="campo">
+          <label for="cfgEfeitos">Efeitos <output id="cfgEfeitosValor">80%</output></label>
+          <input id="cfgEfeitos" type="range" min="0" max="100" step="5">
+        </div>
+      </fieldset>
+
+      <p class="aviso" id="cfgAviso" role="status" aria-live="polite"></p>
+      <button id="btnSalvarConfig" type="submit" aria-busy="false" disabled>
+        Salvar alterações
+      </button>
+      <button class="fantasma compacto-centro" id="btnRestaurarConfig" type="button">
+        Restaurar padrões
+      </button>
+    </form>
+    <button class="secundario" id="btnVoltarConfig" type="button">Voltar</button>
+  </div>
+</section>

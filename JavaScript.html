@@ -1,0 +1,1547 @@
+<!--
+  JavaScript.html
+  Cliente da API, roteador de telas e ligacao com o motor do jogo.
+
+  Integracao com o backend, em tres regras:
+
+  1. O contrato manda. api_bootstrap devolve a lista de operacoes, os codigos de
+     erro e as constantes de jogo; o objeto Api e montado a partir dela. Nao ha
+     lista de metodos escrita a mao aqui, nem codigo de erro repetido como
+     literal - eram duas fontes que precisavam concordar e nao concordavam.
+
+  2. Uma chamada para abrir. Antes eram quatro em sequencia (dados do jogo,
+     validar sessao, perfil, configuracoes) e no Apps Script cada uma e uma
+     execucao completa do servidor. Agora e uma, e hidratar() distribui o
+     resultado. O mesmo caminho serve a abertura e o pos-login.
+
+  3. O token nao circula. Quem anexa o token e o invólucro gerado pelo contrato,
+     conforme o campo `token` de cada operacao. Nenhum ponto de chamada precisa
+     lembrar disso.
+-->
+<script>
+(function () {
+  'use strict';
+
+  function montarMarcaLogin() {
+    var target = document.querySelector('#screen-login [data-brand-logo]');
+    if (!target || !window.SobreEncantosBrandLogo || target.querySelector('.codex-login-logo')) return;
+    var image = document.createElement('img');
+    image.className = 'codex-login-logo';
+    image.src = window.SobreEncantosBrandLogo;
+    image.alt = 'Marca Sobre Encantos';
+    target.replaceChildren(image);
+  }
+  document.addEventListener('DOMContentLoaded', montarMarcaLogin);
+
+  /**
+   * Versao de contrato para a qual este HTML foi escrito. Precisa casar com
+   * ApiContract.VERSION no backend; a auditoria do frontend compara os dois.
+   * Divergencia em tempo de execucao quase sempre significa HTML velho em cache
+   * conversando com backend novo.
+   */
+  var CONTRATO_ESPERADO = '2.0.0';
+
+  // --- Guarda do token ------------------------------------------------------
+
+  /**
+   * localStorage pode estar indisponivel no iframe do Apps Script; nesse caso a
+   * sessao vale apenas enquanto a pagina estiver aberta.
+   */
+  var Guarda = (function () {
+    var CHAVE = 'sobre-encantos:token';
+    var memoria = null;
+    var disponivel = (function () {
+      try {
+        window.localStorage.setItem(CHAVE + ':teste', '1');
+        window.localStorage.removeItem(CHAVE + ':teste');
+        return true;
+      } catch (e) {
+        return false;
+      }
+    })();
+
+    return {
+      ler: function () {
+        if (!disponivel) return memoria;
+        try { return window.localStorage.getItem(CHAVE); } catch (e) { return memoria; }
+      },
+      gravar: function (token) {
+        memoria = token;
+        if (!disponivel) return;
+        try {
+          if (token) window.localStorage.setItem(CHAVE, token);
+          else window.localStorage.removeItem(CHAVE);
+        } catch (e) { /* fica so em memoria */ }
+      }
+    };
+  })();
+
+  // --- Estado do aplicativo -------------------------------------------------
+
+  /**
+   * Espelho do que o backend ja contou. `sujo` marca o que precisa ser buscado
+   * de novo - sem isso cada visita a uma tela custaria uma execucao no servidor.
+   */
+  var App = {
+    token: null,
+    contrato: null,
+    codigos: {},
+    constantes: null,
+    perfil: null,
+    progresso: null,
+    niveis: null,
+    configuracoes: null,
+    inventario: null,
+    conquistas: null,
+    expiraEm: null,
+    nivelAtual: 1,
+    partidaAtiva: false,
+    sujo: {
+      perfil: false, niveis: false, configuracoes: false,
+      inventario: false, conquistas: false
+    }
+  };
+
+  var Api = null;
+  var temporizadorExpiracao = null;
+  var bootstrapEmAndamento = false;
+
+  // A experiencia narrativa e montada em MainMenu.html, antes deste cliente
+  // ser inicializado. Esta ponte publica somente as operacoes narrativas ja
+  // descritas pelo contrato; o token continua anexado pelo cliente gerado.
+  var EVENTO_SESSAO_PRONTA = 'sobre-encantos:session-ready';
+  var EVENTO_SESSAO_ENCERRADA = 'sobre-encantos:session-ended';
+
+  function emitirEventoSessao(nome) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    var evento;
+    try {
+      evento = new CustomEvent(nome);
+    } catch (erro) {
+      evento = document.createEvent('Event');
+      evento.initEvent(nome, false, false);
+    }
+    window.dispatchEvent(evento);
+  }
+
+  function executarOperacaoNarrativa(nome, args) {
+    if (!Api || !App.token || typeof Api[nome] !== 'function') {
+      return Promise.reject(new ErroApi('UNAUTHORIZED',
+          'Entre novamente para continuar sua experiência.'));
+    }
+    return Api[nome].apply(Api, args).catch(function (erro) {
+      if (ehSessaoInvalida(erro)) tratarErro(erro);
+      throw erro;
+    });
+  }
+
+  // Interface mínima para o painel narrativo. Nenhum outro componente recebe
+  // o token ou conhece o nome das funções remotas.
+  window.SobreEncantosBackend = {
+    pronto: function () { return Boolean(Api && App.token); },
+    carregarExperiencia: function (schoolYear) {
+      return executarOperacaoNarrativa('workflowNarrativa', [schoolYear]);
+    },
+    registrarDecisao: function (state, chapterId, decisionId, evidence) {
+      return executarOperacaoNarrativa('decisaoNarrativa',
+          [state, chapterId, decisionId, evidence]);
+    },
+    carregarDesfecho: function () {
+      return executarOperacaoNarrativa('desfechoNarrativa', []);
+    }
+  };
+
+  // --- Transporte -----------------------------------------------------------
+
+  /**
+   * @param {string} codigo
+   * @param {string} mensagem
+   * @constructor
+   */
+  function ErroApi(codigo, mensagem) {
+    this.codigo = codigo;
+    this.message = mensagem;
+  }
+  ErroApi.prototype = Object.create(Error.prototype);
+
+  /**
+   * Chama uma funcao do backend e desembrulha o envelope
+   * { ok, data | error } de RemoteFunctions.gs.
+   *
+   * @param {string} fn Nome da funcao no backend.
+   * @param {!Array} args
+   * @return {!Promise<*>}
+   */
+  function invocar(fn, args) {
+    return new Promise(function (resolve, reject) {
+      if (!window.google || !window.google.script || !window.google.script.run) {
+        reject(new ErroApi('SEM_BACKEND',
+            'Não foi possível conectar ao jogo. Abra o aplicativo pela URL do App da Web.'));
+        return;
+      }
+      var executor = window.google.script.run
+          .withSuccessHandler(function (resposta) {
+            if (resposta && resposta.ok) {
+              resolve(resposta.data);
+            } else {
+              var erro = (resposta && resposta.error) || {};
+              reject(new ErroApi(erro.code || 'INTERNAL_ERROR',
+                                 erro.message || 'Erro desconhecido.'));
+            }
+          })
+          .withFailureHandler(function () {
+            reject(new ErroApi('TRANSPORTE',
+                'Falha de comunicacao com o servidor. Verifique a conexao.'));
+          });
+      executor[fn].apply(executor, args);
+    });
+  }
+
+  /**
+   * Monta o cliente a partir do contrato. Cada operacao vira um metodo que
+   * anexa o token quando o contrato pede.
+   *
+   * @param {!Object} contrato
+   * @return {!Object}
+   */
+  function construirApi(contrato) {
+    var cliente = {};
+    contrato.operacoes.forEach(function (op) {
+      cliente[op.cliente] = function () {
+        var args = Array.prototype.slice.call(arguments);
+        if (op.token === "obrigatorio" || op.token === 'opcional') {
+          args.unshift(App.token);
+        }
+        return invocar(op.fn, args);
+      };
+    });
+    return cliente;
+  }
+
+  /**
+   * @param {!Object} erro
+   * @return {boolean} true se o backend recusou por sessao invalida.
+   */
+  function ehSessaoInvalida(erro) {
+    return !!erro && erro.codigo === App.codigos.UNAUTHORIZED;
+  }
+
+  // --- Utilidades de DOM ----------------------------------------------------
+
+  function $(id) { return document.getElementById(id); }
+
+  /**
+   * @param {string} id
+   * @param {string|number} valor
+   */
+  function texto(id, valor) {
+    var el = $(id);
+    if (el) el.textContent = String(valor);
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} mensagem
+   * @param {boolean=} sucesso
+   */
+  function aviso(id, mensagem, sucesso) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = mensagem || '';
+    el.className = 'aviso' + (sucesso ? ' ok' : '');
+  }
+
+  var toastTemporizador = null;
+
+  /**
+   * Mensagem flutuante, para erro que nao pertence a nenhum formulario.
+   * @param {string} mensagem
+   * @param {boolean=} sucesso
+   */
+  function toast(mensagem, sucesso) {
+    var el = $('toast');
+    if (!el) return;
+    el.textContent = mensagem;
+    el.className = 'toast' + (sucesso ? ' ok' : '');
+    el.hidden = false;
+    if (toastTemporizador) clearTimeout(toastTemporizador);
+    toastTemporizador = setTimeout(function () { el.hidden = true; }, 5000);
+  }
+
+  /**
+   * @param {number} valor
+   * @return {string}
+   */
+  function numero(valor) {
+    return Number(valor || 0).toLocaleString('pt-BR');
+  }
+
+  /** @param {string} value @return {string} */
+  function rotuloDificuldade(value) {
+    return { easy: 'Fácil', normal: 'Normal', hard: 'Difícil' }[value] || 'Normal';
+  }
+
+  // --- Roteador -------------------------------------------------------------
+
+  var Rotas = {
+    atual: null,
+
+    /**
+     * @param {string} nome
+     * @param {*=} params
+     */
+    ir: function (nome, params) {
+      var telas = document.querySelectorAll('.screen');
+      for (var i = 0; i < telas.length; i++) telas[i].classList.remove('active');
+      var alvo = $('screen-' + nome);
+      if (alvo) alvo.classList.add('active');
+      Rotas.atual = nome;
+
+      var gancho = Telas[nome];
+      if (gancho && gancho.entrar) {
+        Promise.resolve(gancho.entrar(params)).catch(function (erro) {
+          tratarErro(erro);
+        });
+      }
+    },
+
+    /** @param {string} mensagem */
+    carregando: function (mensagem) {
+      texto('loadingText', mensagem || 'Carregando...');
+      $('btnTentarNovamente').hidden = true;
+      $('loadingStatus').setAttribute('aria-busy', 'true');
+      $('loadingStatus').querySelector('.roda').hidden = false;
+      texto('loadingHint', 'Preparando sua jornada pelas paisagens do Brasil.');
+      Rotas.ir('loading');
+    }
+  };
+
+  /**
+   * Trata erro vindo do backend.
+   *
+   * Sessao invalida devolve ao login com explicacao. Erro com formulario de
+   * destino aparece nele. O resto vai para o toast: antes caia na tela de
+   * carregamento, que nao tem saida e prendia o usuario.
+   *
+   * @param {!Object} erro
+   * @param {string=} avisoId
+   */
+  function tratarErro(erro, avisoId) {
+    var mensagem = (erro && erro.message) || 'Erro inesperado.';
+
+    if (ehSessaoInvalida(erro)) {
+      encerrarSessaoLocal();
+      if (Game.isRunning()) Game.stop();
+      if (Rotas.atual !== 'login') Rotas.ir('login');
+      aviso('loginAviso', 'Sua sessão expirou. Entre novamente.');
+      return;
+    }
+
+    if (avisoId) {
+      aviso(avisoId, mensagem);
+      return;
+    }
+
+    console.error(erro);
+    toast(mensagem);
+  }
+
+  function encerrarSessaoLocal() {
+    App.token = null;
+    App.perfil = null;
+    App.progresso = null;
+    App.niveis = null;
+    App.configuracoes = null;
+    App.inventario = null;
+    App.conquistas = null;
+    App.expiraEm = null;
+    App.partidaAtiva = false;
+    Guarda.gravar(null);
+    if (temporizadorExpiracao) clearTimeout(temporizadorExpiracao);
+    temporizadorExpiracao = null;
+    emitirEventoSessao(EVENTO_SESSAO_ENCERRADA);
+  }
+
+  /**
+   * Distribui o resultado de api_bootstrap pelo estado local.
+   * Um unico lugar hidrata o aplicativo, seja na abertura ou apos o login.
+   *
+   * @param {!Object} payload
+   */
+  function hidratar(payload) {
+    App.contrato = payload.contrato;
+    App.codigos = payload.contrato.codigos;
+    App.constantes = payload.constantes;
+    Api = construirApi(payload.contrato);
+
+    if (payload.contrato.versao !== CONTRATO_ESPERADO) {
+      // Nao interrompe: o backend novo costuma servir o cliente antigo. Mas o
+      // usuario precisa saber por que algo pode se comportar estranho.
+      toast('Esta pagina foi carregada de uma versao anterior (' +
+            CONTRATO_ESPERADO + ' contra ' + payload.contrato.versao +
+            '). Recarregue para atualizar.');
+    }
+
+    if (payload.sessao.valida) {
+      App.perfil = payload.sessao.usuario;
+      App.expiraEm = payload.sessao.expiraEm;
+      App.progresso = payload.progresso;
+      App.niveis = payload.niveis;
+      App.configuracoes = payload.configuracoes;
+      App.inventario = payload.inventario;
+      App.conquistas = payload.conquistas;
+      App.nivelAtual = (payload.progresso && payload.progresso.currentLevel) || 1;
+      App.sujo = {
+        perfil: false, niveis: false, configuracoes: false,
+        inventario: !Array.isArray(App.inventario),
+        conquistas: !Array.isArray(App.conquistas)
+      };
+      agendarExpiracao(App.expiraEm);
+      emitirEventoSessao(EVENTO_SESSAO_PRONTA);
+    } else {
+      encerrarSessaoLocal();
+      App.niveis = payload.niveis;
+    }
+  }
+
+  /**
+   * Aplica um recorte de estado devolvido por uma mutacao. Assim a tela
+   * seguinte usa exatamente o que o backend acabou de persistir, sem uma
+   * segunda chamada e sem recalcular regras de progresso no navegador.
+   * @param {?Object} state
+   */
+  function aplicarEstadoDoServidor(state) {
+    if (!state) return;
+    if (state.profile) App.perfil = state.profile;
+    if (state.progress) {
+      App.progresso = state.progress;
+      App.nivelAtual = state.progress.currentLevel || App.nivelAtual;
+    }
+    if (state.levels) App.niveis = state.levels;
+    if (state.achievements) {
+      App.conquistas = state.achievements;
+      App.sujo.conquistas = false;
+    }
+    App.sujo.perfil = !state.profile;
+    App.sujo.niveis = !state.levels;
+  }
+
+  /**
+   * Devolve ao login quando a sessao expirar, em vez de deixar o usuario
+   * descobrir no meio de uma acao.
+   * @param {?string} expiraEm
+   */
+  function agendarExpiracao(expiraEm) {
+    if (temporizadorExpiracao) clearTimeout(temporizadorExpiracao);
+    temporizadorExpiracao = null;
+    if (!expiraEm) return;
+
+    var restante = new Date(expiraEm).getTime() - Date.now();
+    if (restante <= 0 || restante > 2147483647) return;
+
+    temporizadorExpiracao = setTimeout(function () {
+      encerrarSessaoLocal();
+      if (Game.isRunning()) Game.stop();
+      Rotas.ir('login');
+      aviso('loginAviso', 'Sua sessão expirou. Entre novamente.');
+    }, restante);
+  }
+
+  // --- Telas ----------------------------------------------------------------
+
+  var Telas = {};
+
+  // Login / registro
+  Telas.login = (function () {
+    var modoRegistro = false;
+
+    function aplicarModo() {
+      texto('loginModoTexto', modoRegistro ? 'Crie sua conta para começar.'
+                                           : 'Entre para começar a voar.');
+      texto('btnEntrar', modoRegistro ? 'Criar conta' : 'Entrar');
+      texto('btnAlternarModo', modoRegistro ? 'Já tenho conta — entrar'
+                                            : 'Não tenho conta — criar agora');
+      $('campoEmail').hidden = !modoRegistro;
+      $('loginPass').setAttribute('autocomplete',
+          modoRegistro ? 'new-password' : 'current-password');
+      $('loginPass').setAttribute('enterkeyhint', modoRegistro ? 'next' : 'go');
+      texto('loginPassHint', modoRegistro
+          ? 'Use pelo menos 8 caracteres; não reutilize outra senha.'
+          : 'Digite a senha da sua conta.');
+      aviso('loginAviso', '');
+    }
+
+    function enviar(evento) {
+      evento.preventDefault();
+      var usuario = $('loginUser').value.trim();
+      var senha = $('loginPass').value;
+      var email = $('loginEmail').value.trim();
+
+      if (!usuario || !senha) {
+        aviso('loginAviso', 'Informe usuário e senha.');
+        return;
+      }
+      if (!$('loginForm').checkValidity()) {
+        $('loginForm').reportValidity();
+        aviso('loginAviso', 'Revise os campos destacados.');
+        return;
+      }
+
+      $('btnEntrar').disabled = true;
+      $('btnEntrar').setAttribute('aria-busy', 'true');
+      $('loginForm').setAttribute('aria-busy', 'true');
+      aviso('loginAviso', modoRegistro ? 'Criando conta...' : 'Entrando...', true);
+
+      var autenticar = modoRegistro
+          ? Api.registrar(usuario, senha, email).then(function () {
+              return Api.entrar(usuario, senha);
+            })
+          : Api.entrar(usuario, senha);
+
+      autenticar.then(function (sessao) {
+        App.token = sessao.token;
+        Guarda.gravar(sessao.token);
+        $('loginPass').value = '';
+        // Mesmo caminho da abertura: uma chamada hidrata perfil, progresso,
+        // niveis e configuracoes.
+        return Api.bootstrap().then(hidratar);
+      }).then(function () {
+        Rotas.ir('menu');
+      }).catch(function (erro) {
+        // O formulario de login trata o proprio erro em vez de delegar a
+        // tratarErro: aqui UNAUTHORIZED significa credencial errada, nao sessao
+        // vencida, e a mensagem do servidor ja diz exatamente isso.
+        aviso('loginAviso', (erro && erro.message) || 'Não foi possível entrar.');
+      }).then(function () {
+        $('btnEntrar').disabled = false;
+        $('btnEntrar').setAttribute('aria-busy', 'false');
+        $('loginForm').setAttribute('aria-busy', 'false');
+      });
+    }
+
+    return {
+      montar: function () {
+        $('loginForm').addEventListener('submit', enviar);
+        $('btnAlternarModo').addEventListener('click', function () {
+          modoRegistro = !modoRegistro;
+          aplicarModo();
+        });
+        $('btnMostrarSenha').addEventListener('click', function () {
+          var senha = $('loginPass');
+          var mostrar = senha.type === 'password';
+          senha.type = mostrar ? 'text' : 'password';
+          this.setAttribute('aria-pressed', mostrar ? 'true' : 'false');
+          this.setAttribute('aria-label', mostrar ? 'Ocultar senha' : 'Mostrar senha');
+          var icone = this.querySelector('.material-icons');
+          if (icone) icone.textContent = mostrar ? 'visibility_off' : 'visibility';
+          else this.textContent = mostrar ? 'Ocultar senha' : 'Mostrar senha';
+          senha.focus();
+        });
+        aplicarModo();
+      },
+      entrar: function () {
+        aviso('loginAviso', '');
+        var campo = $('loginUser');
+        if (campo && !campo.value) campo.focus();
+      }
+    };
+  })();
+
+  // Menu principal
+  Telas.menu = {
+    montar: function () {
+      $('btnJogar').addEventListener('click', function () {
+        Jogo.iniciar(App.nivelAtual);
+      });
+      $('btnNiveis').addEventListener('click', function () { Rotas.ir('levels'); });
+      $('btnRanking').addEventListener('click', function () { Rotas.ir('leaderboard'); });
+      $('btnConfig').addEventListener('click', function () { Rotas.ir('settings'); });
+      $('btnSair').addEventListener('click', function () {
+        var botao = $('btnSair');
+        botao.disabled = true;
+        var rotulo = botao.textContent;
+        botao.textContent = 'Saindo…';
+        Api.sair().then(function () {
+          encerrarSessaoLocal();
+          Rotas.ir('login');
+        }).catch(function (erro) {
+          if (ehSessaoInvalida(erro)) {
+            encerrarSessaoLocal();
+            Rotas.ir('login');
+            aviso('loginAviso', 'Sua sessão já estava encerrada. Entre novamente.');
+            return;
+          }
+          botao.disabled = false;
+          botao.textContent = 'Tentar sair novamente';
+          aviso('menuAviso', erro && erro.message ? erro.message : 'Não foi possível encerrar a sessão.');
+        }).finally(function () {
+          if (!App.token) botao.textContent = rotulo;
+        });
+      });
+    },
+
+    entrar: function () {
+      // So volta ao servidor quando algo mudou de fato. O bootstrap ja traz
+      // inventario e conquistas; o fallback cobre paginas antigas em cache.
+      var chamadas = [];
+      if (App.sujo.perfil || !App.perfil) {
+        chamadas.push(Api.perfil().then(function (perfil) {
+          App.perfil = perfil;
+          App.progresso = perfil.progress || App.progresso;
+          App.sujo.perfil = false;
+        }).catch(function (erro) {
+          if (ehSessaoInvalida(erro)) throw erro;
+          App.sujo.perfil = true;
+          console.warn('Perfil indisponível:', erro);
+        }));
+      }
+      if ((App.sujo.inventario || !Array.isArray(App.inventario)) && Api.inventario) {
+        chamadas.push(Api.inventario().then(function (inventario) {
+          App.inventario = inventario;
+          App.sujo.inventario = false;
+        }).catch(function (erro) {
+          if (ehSessaoInvalida(erro)) throw erro;
+          App.sujo.inventario = true;
+          console.warn('Inventario indisponivel:', erro);
+        }));
+      }
+      if ((App.sujo.conquistas || !Array.isArray(App.conquistas)) && Api.conquistas) {
+        chamadas.push(Api.conquistas().then(function (conquistas) {
+          App.conquistas = conquistas;
+          App.sujo.conquistas = false;
+        }).catch(function (erro) {
+          if (ehSessaoInvalida(erro)) throw erro;
+          App.sujo.conquistas = true;
+          console.warn('Conquistas indisponiveis:', erro);
+        }));
+      }
+
+      return Promise.all(chamadas).then(function () {
+        // A busca e assincrona: quando ela volta, o usuario pode ja ter saido
+        // desta tela ou perdido a sessao. Desenhar aqui leria estado que nao
+        // existe mais.
+        if (!App.perfil || Rotas.atual !== 'menu') return;
+
+        var perfil = App.perfil;
+        App.nivelAtual = (App.progresso && App.progresso.currentLevel) || 1;
+
+        texto('menuSaudacao', 'Olá, ' + perfil.username + '.');
+        texto('menuRecorde', numero(perfil.bestScore));
+        texto('menuMoedas', numero(perfil.coins));
+        texto('menuDistancia', numero(App.progresso && App.progresso.totalDistance) + ' m');
+        texto('menuDificuldade',
+            rotuloDificuldade(App.configuracoes && App.configuracoes.difficulty));
+
+        var nivel = buscarNivel(App.nivelAtual);
+        texto('btnJogar', nivel ? 'Continuar: ' + nivel.city : 'Jornada concluída');
+        $('btnJogar').disabled = !nivel;
+        texto('menuJogarAjuda', nivel
+            ? 'Retoma sua rota diretamente em ' + nivel.city + '.'
+            : 'Escolha um nível para revisitar um destino.');
+        texto('menuDestino', nivel ? nivel.city + ' - ' + nivel.state : 'Jornada concluída');
+        texto('menuAtracao', nivel ? nivel.attraction : 'Você visitou todos os destinos.');
+
+        var total = App.constantes ? App.constantes.levels.length : 10;
+        var concluidos = App.progresso && App.progresso.state
+            ? (App.progresso.state.levelsCompleted || []).length : 0;
+        texto('menuProgresso', concluidos + ' de ' + total + ' níveis concluídos');
+        $('menuProgressoBarra').style.width =
+            Math.round((concluidos / Math.max(total, 1)) * 100) + '%';
+        $('menuProgressoTrilha').setAttribute('aria-valuemax', total);
+        $('menuProgressoTrilha').setAttribute('aria-valuenow', concluidos);
+        renderizarRecursos();
+      });
+    }
+  };
+
+  function criarRecursoItem(nome, detalhe, quantidade, liberado) {
+    var item = document.createElement('li');
+    item.className = 'recurso-item' + (liberado ? ' liberado' : '');
+
+    var icone = document.createElement('span');
+    icone.className = 'recurso-icone';
+    icone.setAttribute('aria-hidden', 'true');
+    icone.textContent = liberado ? '✓' : '•';
+
+    var textos = document.createElement('span');
+    var titulo = document.createElement('b');
+    titulo.className = 'recurso-nome';
+    titulo.textContent = nome;
+    var descricao = document.createElement('small');
+    descricao.className = 'recurso-detalhe';
+    descricao.textContent = detalhe;
+    textos.appendChild(titulo);
+    textos.appendChild(descricao);
+
+    var valor = document.createElement('span');
+    valor.className = 'recurso-quantidade';
+    valor.textContent = quantidade;
+
+    item.appendChild(icone);
+    item.appendChild(textos);
+    item.appendChild(valor);
+    return item;
+  }
+
+  function preencherRecursosVazios(id, mensagem) {
+    var lista = $(id);
+    if (!lista) return;
+    lista.textContent = '';
+    var vazio = document.createElement('li');
+    vazio.className = 'recursos-vazio';
+    vazio.textContent = mensagem;
+    lista.appendChild(vazio);
+  }
+
+  function renderizarRecursos() {
+    var resumo = $('menuRecursosResumo');
+    var conquistas = Array.isArray(App.conquistas) ? App.conquistas : null;
+    var inventario = Array.isArray(App.inventario) ? App.inventario : null;
+
+    if (!conquistas) {
+      preencherRecursosVazios('menuConquistas', 'Conquistas indisponíveis no momento.');
+    } else {
+      var liberadas = conquistas.filter(function (item) { return item && item.unlocked; }).length;
+      if (resumo) resumo.textContent = liberadas + '/' + conquistas.length + ' conquistas';
+      var listaConquistas = $('menuConquistas');
+      if (listaConquistas) {
+        listaConquistas.textContent = '';
+        conquistas.forEach(function (item) {
+          var recompensa = item.rewardCoins ? ' · +' + numero(item.rewardCoins) + ' pistas' : '';
+          listaConquistas.appendChild(criarRecursoItem(
+              item.name || 'Conquista',
+              (item.unlocked ? 'Desbloqueada' : (item.description || 'Ainda não desbloqueada')) + recompensa,
+              item.unlocked ? '✓' : '—', Boolean(item.unlocked)));
+        });
+      }
+    }
+
+    if (!inventario) {
+      preencherRecursosVazios('menuInventario', 'Itens indisponíveis no momento.');
+    } else {
+      var totalItens = inventario.reduce(function (total, item) {
+        return total + Number(item && item.quantity || 0);
+      }, 0);
+      if (resumo) {
+        resumo.textContent = conquistas
+            ? resumo.textContent + ' · ' + numero(totalItens) + ' itens'
+            : numero(totalItens) + ' itens';
+      }
+      var listaInventario = $('menuInventario');
+      if (listaInventario) {
+        listaInventario.textContent = '';
+        if (!inventario.length) {
+          preencherRecursosVazios('menuInventario', 'Nenhum item disponível ainda.');
+        } else {
+          inventario.forEach(function (item) {
+            listaInventario.appendChild(criarRecursoItem(
+                item.name || 'Item', item.description || '',
+                '×' + numero(item.quantity), Number(item.quantity) > 0));
+          });
+        }
+      }
+    }
+
+    if (resumo && !conquistas && !inventario) resumo.textContent = 'Indisponível';
+  }
+
+  // Seleção de nível
+  Telas.levels = (function () {
+    function correspondeAoFiltro(nivel, filtro) {
+      if (filtro === 'available') return nivel.unlocked && !nivel.completed;
+      if (filtro === 'completed') return nivel.completed;
+      if (filtro === 'locked') return !nivel.unlocked;
+      return true;
+    }
+
+    function desenhar() {
+      if (!App.niveis || Rotas.atual !== 'levels') return;
+      var lista = $('listaNiveis');
+      var filtro = $('levelsFiltro').value;
+      var visiveis = App.niveis.filter(function (nivel) {
+        return correspondeAoFiltro(nivel, filtro);
+      });
+      lista.textContent = '';
+      visiveis.forEach(function (nivel) {
+        lista.appendChild(cartaoDeNivel(nivel));
+      });
+      texto('levelsVisiveis', visiveis.length +
+          (visiveis.length === 1 ? ' destino' : ' destinos'));
+      $('levelsVazio').hidden = visiveis.length !== 0;
+    }
+
+    function carregar() {
+      var lista = $('listaNiveis');
+      var pronto;
+
+      if (App.sujo.niveis || !App.niveis) {
+        lista.textContent = '';
+        texto('levelsStatus', 'Carregando níveis...');
+        $('levelsStatus').hidden = false;
+        $('btnAtualizarNiveis').hidden = true;
+        pronto = Api.niveis().then(function (niveis) {
+          App.niveis = niveis;
+          App.sujo.niveis = false;
+        });
+      } else {
+        pronto = Promise.resolve();
+      }
+
+      return pronto.then(function () {
+        if (!App.niveis || Rotas.atual !== 'levels') return;
+        var liberados = 0;
+        var concluidos = 0;
+        App.niveis.forEach(function (nivel) {
+          if (nivel.unlocked) liberados++;
+          if (nivel.completed) concluidos++;
+        });
+        texto('levelsLiberados', liberados +
+            (liberados === 1 ? ' destino liberado' : ' destinos liberados'));
+        texto('levelsConcluidos', concluidos + ' concluídos');
+        $('levelsStatus').hidden = true;
+        desenhar();
+      }).catch(function (erro) {
+        if (ehSessaoInvalida(erro)) {
+          tratarErro(erro);
+          return;
+        }
+        texto('levelsStatus',
+            (erro && erro.message) || 'Não foi possível carregar os destinos.');
+        $('levelsStatus').hidden = false;
+        $('btnAtualizarNiveis').hidden = false;
+      });
+    }
+
+    return {
+      montar: function () {
+        $('btnVoltarNiveis').addEventListener('click', function () { Rotas.ir('menu'); });
+        $('btnAtualizarNiveis').addEventListener('click', function () {
+          App.sujo.niveis = true;
+          carregar();
+        });
+        $('levelsFiltro').addEventListener('change', desenhar);
+      },
+      entrar: carregar
+    }
+  })();
+
+  /**
+   * @param {!Object} nivel
+   * @return {!HTMLElement}
+   */
+  function cartaoDeNivel(nivel) {
+    var cartao = document.createElement('button');
+    cartao.className = 'cartao';
+    if (nivel.id === App.nivelAtual) {
+      cartao.classList.add('atual');
+      cartao.setAttribute('aria-current', 'step');
+    }
+    cartao.disabled = !nivel.unlocked;
+    cartao.type = 'button';
+    cartao.setAttribute('aria-label',
+        'Nível ' + nivel.id + ', ' + nivel.city + ', ' + nivel.attraction + '. ' +
+        (nivel.completed ? 'Concluído.' : (nivel.unlocked ? 'Disponível.' : 'Bloqueado.')));
+
+    var num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = nivel.id;
+
+    var info = document.createElement('span');
+    info.className = 'info';
+    var titulo = document.createElement('b');
+    titulo.textContent = nivel.city + ' - ' + nivel.state;
+    var detalhe = document.createElement('span');
+    detalhe.textContent = nivel.attraction + ' · ' + numero(nivel.lengthMeters) +
+        ' m · ' + rotuloDificuldade(nivel.difficulty);
+    info.appendChild(titulo);
+    info.appendChild(detalhe);
+
+    var marca = document.createElement('span');
+    marca.className = 'marca';
+    marca.setAttribute('aria-hidden', 'true');
+    marca.textContent = nivel.completed ? "✓" : (nivel.unlocked ? "→" : "🔒");
+
+    cartao.appendChild(num);
+    cartao.appendChild(info);
+    cartao.appendChild(marca);
+
+    if (nivel.unlocked) {
+      cartao.addEventListener('click', function () { Jogo.iniciar(nivel.id); });
+    }
+    return cartao;
+  }
+
+  // Ranking
+  Telas.leaderboard = (function () {
+    var ultimaRequisicao = 0;
+
+    function preencherFiltro() {
+      var filtro = $('rankingNivel');
+      if (filtro.options.length > 1 || !App.constantes) return;
+      App.constantes.levels.forEach(function (nivel) {
+        var opcao = document.createElement('option');
+        opcao.value = nivel.id;
+        opcao.textContent = nivel.id + ' — ' + nivel.city;
+        filtro.appendChild(opcao);
+      });
+    }
+
+    function carregarRanking() {
+      var corpo = $('corpoRanking');
+      var nivelId = $('rankingNivel').value;
+      var limite = Number($('rankingLimite').value) || 20;
+      var requisicaoId = ++ultimaRequisicao;
+      var tela = $('screen-leaderboard');
+      if (tela) tela.setAttribute('aria-busy', 'true');
+      corpo.textContent = '';
+      $('tabelaRanking').hidden = true;
+      $('rankingVazio').hidden = true;
+      $('rankingPodio').hidden = true;
+      $('rankingPodio').textContent = '';
+      var vizinhanca = $('rankingVizinhanca');
+      if (vizinhanca) vizinhanca.textContent = '';
+      texto('rankingAtualizado', '');
+      texto('rankingResumo', 'Carregando o painel…');
+      $('btnAtualizarRanking').disabled = true;
+      $('btnAtualizarRanking').setAttribute('aria-busy', 'true');
+      texto('btnAtualizarRanking', 'Atualizando...');
+
+      // Vizinhanca so faz sentido com sessao e sempre no ranking global: e a
+      // posicao do jogador entre todos, nao dentro do filtro de destino.
+      if (App.token && Api.rankingVizinhanca) {
+        Api.rankingVizinhanca().then(function (janela) {
+          if (Rotas.atual !== 'leaderboard') return;
+          if (window.RankingVizinhanca) RankingVizinhanca.render('rankingVizinhanca', janela);
+        }).catch(function () { /* o ranking completo abaixo continua valendo */ });
+      }
+
+      var requisicao = nivelId
+          ? Api.ranking(limite, Number(nivelId)) : Api.ranking(limite);
+      return requisicao.then(function (entradas) {
+        if (requisicaoId !== ultimaRequisicao || Rotas.atual !== 'leaderboard') return;
+        if (!entradas.length) {
+          $('rankingVazio').hidden = false;
+          texto('rankingResumo', nivelId
+              ? 'Nenhuma pontuação registrada neste destino.'
+              : 'Melhor pontuação de cada jogador.');
+          return;
+        }
+        entradas.forEach(function (entrada) {
+          corpo.appendChild(linhaDeRanking(entrada));
+        });
+        desenharPodio(entradas.slice(0, 3));
+        $('tabelaRanking').hidden = false;
+        texto('rankingResumo', entradas.length +
+            (entradas.length === 1 ? ' jogador no placar.' : ' jogadores no placar.'));
+        texto('rankingAtualizado', 'Atualizado agora');
+      }).catch(function (erro) {
+        if (requisicaoId !== ultimaRequisicao || Rotas.atual !== 'leaderboard') return;
+        $('rankingVazio').hidden = false;
+        texto('rankingVazio',
+            (erro && erro.message) || 'Não foi possível carregar o ranking.');
+        texto('rankingResumo', 'Ranking indisponível no momento.');
+      }).then(function () {
+        if (requisicaoId !== ultimaRequisicao) return;
+        $('btnAtualizarRanking').disabled = false;
+        $('btnAtualizarRanking').setAttribute('aria-busy', 'false');
+        if (tela) tela.setAttribute('aria-busy', 'false');
+        texto('btnAtualizarRanking', 'Atualizar');
+      });
+    }
+
+    return {
+      montar: function () {
+        $('btnVoltarRanking').addEventListener('click', function () { Rotas.ir('menu'); });
+        $('btnAtualizarRanking').addEventListener('click', carregarRanking);
+        $('rankingNivel').addEventListener('change', carregarRanking);
+        $('rankingLimite').addEventListener('change', carregarRanking);
+      },
+      entrar: function () {
+        preencherFiltro();
+        return carregarRanking();
+      }
+    }
+  })();
+
+  /** @param {!Array<!Object>} entradas */
+  function desenharPodio(entradas) {
+    var podio = $('rankingPodio');
+    podio.textContent = '';
+    entradas.forEach(function (entrada, index) {
+      var item = document.createElement('div');
+      var posicao = document.createElement('span');
+      var nome = document.createElement('b');
+      var pontos = document.createElement('small');
+      item.className = 'podio-item posicao-' + (index + 1);
+      posicao.textContent = (index + 1) + 'º';
+      nome.textContent = nomeProtegidoRanking(entrada);
+      pontos.textContent = numero(entrada.score) + ' pistas';
+      item.appendChild(posicao);
+      item.appendChild(nome);
+      item.appendChild(pontos);
+      podio.appendChild(item);
+    });
+    podio.hidden = entradas.length === 0;
+  }
+
+  /** Mantém o nome do estudante fora do painel compartilhado. */
+  function nomeProtegidoRanking(entrada) {
+    if (App.perfil && entrada.username === App.perfil.username) return 'Você';
+    return 'Viajante ' + numero(entrada.rank);
+  }
+
+  /**
+   * @param {!Object} entrada
+   * @return {!HTMLElement}
+   */
+  function linhaDeRanking(entrada) {
+    var linha = document.createElement('tr');
+    if (App.perfil && entrada.username === App.perfil.username) {
+      linha.className = 'eu';
+      linha.setAttribute('aria-current', 'true');
+    }
+
+    [[entrada.rank, 'num'], [nomeProtegidoRanking(entrada), ''], [entrada.level, 'num'],
+     [numero(entrada.score), 'num']].forEach(function (par) {
+      var celula = document.createElement('td');
+      if (par[1]) celula.className = par[1];
+      celula.textContent = par[0];
+      linha.appendChild(celula);
+    });
+    return linha;
+  }
+
+  // Configuracoes
+  Telas.settings = (function () {
+    var baseline = null;
+
+    function lerFormulario() {
+      return {
+        difficulty: $('cfgDificuldade').value,
+        controls: $('cfgControles').value,
+        musicVolume: Number($('cfgMusica').value) / 100,
+        sfxVolume: Number($('cfgEfeitos').value) / 100,
+        showTutorial: $('cfgTutorial').checked
+      };
+    }
+
+    function atualizarEstadoEdicao() {
+      texto('cfgMusicaValor', $('cfgMusica').value + '%');
+      texto('cfgEfeitosValor', $('cfgEfeitos').value + '%');
+      var alterado = baseline &&
+          JSON.stringify(lerFormulario()) !== JSON.stringify(baseline);
+      $('btnSalvarConfig').disabled = !alterado;
+      if (alterado) aviso('cfgAviso', 'Há alterações não salvas.');
+      else if ($('cfgAviso').textContent === 'Há alterações não salvas.') {
+        aviso('cfgAviso', '');
+      }
+    }
+
+    return {
+    montar: function () {
+      $('cfgForm').addEventListener('input', atualizarEstadoEdicao);
+      $('cfgForm').addEventListener('change', atualizarEstadoEdicao);
+      $('btnRestaurarConfig').addEventListener('click', function () {
+        var defaults = App.constantes && App.constantes.defaultSettings;
+        preencherConfig(defaults || {
+          difficulty: 'normal', controls: 'touch',
+          musicVolume: 0.6, sfxVolume: 0.8, showTutorial: true
+        });
+        atualizarEstadoEdicao();
+      });
+      $('btnVoltarConfig').addEventListener('click', function () { Rotas.ir('menu'); });
+
+      $('cfgForm').addEventListener('submit', function (evento) {
+        evento.preventDefault();
+        var botao = $('btnSalvarConfig');
+        var salvou = false;
+        botao.disabled = true;
+        botao.setAttribute('aria-busy', 'true');
+        $('cfgForm').setAttribute('aria-busy', 'true');
+        texto('btnSalvarConfig', 'Salvando…');
+        aviso('cfgAviso', 'Salvando...', true);
+
+        Api.salvarConfig(lerFormulario()).then(function (efetivas) {
+          // O backend devolve o que de fato gravou, com os limites aplicados.
+          App.configuracoes = efetivas;
+          preencherConfig(efetivas);
+          baseline = lerFormulario();
+          salvou = true;
+          aviso('cfgAviso', 'Configurações salvas.', true);
+        }).catch(function (erro) {
+          tratarErro(erro, 'cfgAviso');
+        }).then(function () {
+          botao.setAttribute('aria-busy', 'false');
+          $('cfgForm').setAttribute('aria-busy', 'false');
+          texto('btnSalvarConfig', 'Salvar alterações');
+          if (salvou) atualizarEstadoEdicao();
+          else botao.disabled = false;
+        });
+      });
+    },
+
+    entrar: function () {
+      aviso('cfgAviso', '');
+      var pronto = App.sujo.configuracoes || !App.configuracoes
+          ? Api.lerConfig().then(function (cfg) {
+              App.configuracoes = cfg;
+              App.sujo.configuracoes = false;
+            })
+          : Promise.resolve();
+
+      return pronto.then(function () {
+        if (Rotas.atual !== 'settings') return;
+        preencherConfig(App.configuracoes);
+        baseline = lerFormulario();
+        atualizarEstadoEdicao();
+      });
+    }
+    };
+  })();
+
+  /** @param {!Object} cfg */
+  function preencherConfig(cfg) {
+    $('cfgDificuldade').value = cfg.difficulty;
+    $('cfgControles').value = cfg.controls;
+    $('cfgMusica').value = Math.round(cfg.musicVolume * 100);
+    $('cfgEfeitos').value = Math.round(cfg.sfxVolume * 100);
+    $('cfgTutorial').checked = cfg.showTutorial !== false;
+    texto('cfgMusicaValor', Math.round(cfg.musicVolume * 100) + '%');
+    texto('cfgEfeitosValor', Math.round(cfg.sfxVolume * 100) + '%');
+  }
+
+  Telas.game = { montar: function () { /* ligado em Jogo.montar */ } };
+  Telas.loading = {
+    montar: function () {
+      $('btnTentarNovamente').addEventListener('click', carregarBootstrap);
+      window.addEventListener('online', atualizarEstadoDaRede);
+      window.addEventListener('offline', atualizarEstadoDaRede);
+      atualizarEstadoDaRede();
+    }
+  };
+
+  function atualizarEstadoDaRede() {
+    var online = navigator.onLine !== false;
+    texto('loadingNetwork', online ? '● Conexão disponível' : '● Sem conexão');
+    $('loadingNetwork').classList.toggle('offline', !online);
+    if (!online && Rotas.atual === 'loading') {
+      texto('loadingDetail', 'Reconecte-se à internet para continuar.');
+    }
+  }
+
+  // --- Partida --------------------------------------------------------------
+
+  var Jogo = (function () {
+    var tickerHud = null;
+    var nivelDaPartida = 1;
+    var gameIdDaPartida = null;
+    var ultimoResultado = null;
+    var envioFimEmAndamento = false;
+    var nivelPendente = null;
+    var dadosNivelDaPartida = null;
+    var hipoteseDaPartida = '';
+    var resultadoPendente = null;
+    var rascunhoSequencia = 0;
+
+    function montar() {
+      Game.init($('gameCanvas'), App.constantes);
+
+      $('btnPause').addEventListener('click', pausar);
+      $('btnRetomar').addEventListener('click', retomar);
+      $('btnComecarNivel').addEventListener('click', comecarComHipotese);
+      $('btnCancelarPlano').addEventListener('click', function () {
+        fecharSobreposicoes();
+        nivelPendente = null;
+        Rotas.ir('levels');
+      });
+      $('btnSalvarCaderno').addEventListener('click', salvarCaderno);
+      $('btnSalvarRascunho').addEventListener('click', salvarRascunho);
+      $('btnReiniciar').addEventListener('click', function () {
+        fecharSobreposicoes();
+        // startGame substitui atomicamente a partida ativa no backend. Uma
+        // chamada separada de abandono abriria uma janela de corrida.
+        iniciar(nivelDaPartida);
+      });
+      $('btnAbandonar').addEventListener('click', function () {
+        var gameId = gameIdDaPartida;
+        Game.stop();
+        pararHud();
+        fecharSobreposicoes();
+        App.partidaAtiva = false;
+        Rotas.carregando('Encerrando a partida...');
+        Api.abandonarPartida(gameId).then(function () {
+          gameIdDaPartida = null;
+          Rotas.ir('menu');
+        }).catch(function (erro) {
+          tratarErro(erro);
+          // tratarErro ja leva UNAUTHORIZED ao login. Qualquer outra falha de
+          // abandono nao deve prender o jogador na tela de carregamento.
+          if (Rotas.atual === 'loading') Rotas.ir('menu');
+        });
+      });
+
+      $('btnFimMenu').addEventListener('click', function () {
+        fecharSobreposicoes();
+        Rotas.ir('menu');
+      });
+      $('btnProximo').addEventListener('click', function () {
+        if (envioFimEmAndamento) return;
+        fecharSobreposicoes();
+        var proximo = nivelDaPartida;
+        if (ultimoResultado && ultimoResultado.completed && ultimoResultado.progress) {
+          proximo = ultimoResultado.progress.currentLevel;
+        }
+        iniciar(proximo);
+      });
+
+      // Aba em segundo plano nao recebe requestAnimationFrame: o mundo nao deve
+      // andar sem ninguem olhando.
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden && Game.isRunning()) pausar();
+      });
+
+      window.addEventListener('keydown', function (e) {
+        if (e.code !== 'Escape' || Rotas.atual !== 'game') return;
+        if (Game.isRunning()) pausar();
+        else if (App.partidaAtiva) retomar();
+      });
+    }
+
+    /** @param {number} nivelId */
+    function iniciar(nivelId) {
+      rascunhoSequencia++;
+      nivelPendente = nivelId;
+      var nivel = buscarNivel(nivelId);
+      fecharSobreposicoes();
+      Rotas.ir('game');
+      texto('planoDestino', nivel
+          ? nivel.city + ' — ' + nivel.attraction
+          : 'Prepare sua pergunta para o próximo território.');
+      $('predictionNote').value = '';
+      aviso('planoAviso', '');
+      $('btnComecarNivel').disabled = false;
+      $('overlayPlano').classList.add('active');
+      $('predictionNote').focus();
+    }
+
+    function comecarComHipotese() {
+      var prediction = $('predictionNote').value.trim();
+      if (prediction.length < 12) {
+        aviso('planoAviso', 'Escreva uma hipótese com pelo menos 12 caracteres.');
+        return;
+      }
+      var nivelId = nivelPendente;
+      hipoteseDaPartida = prediction;
+      $('btnComecarNivel').disabled = true;
+      Rotas.carregando('Preparando o voo...');
+
+      return Api.iniciarPartida(nivelId).then(function (inicio) {
+        nivelDaPartida = inicio.level.id;
+        dadosNivelDaPartida = inicio.level;
+        gameIdDaPartida = inicio.gameId;
+        App.partidaAtiva = true;
+        ultimoResultado = null;
+        resultadoPendente = null;
+        envioFimEmAndamento = false;
+
+        fecharSobreposicoes();
+        Rotas.ir('game');
+        texto('pauseLocal', inicio.level.city + ' - ' + inicio.level.attraction);
+        var mostrarDica = !App.configuracoes || App.configuracoes.showTutorial !== false;
+        $('dicaToque').hidden = !mostrarDica;
+        texto('dicaToque', App.configuracoes && App.configuracoes.controls === 'keyboard'
+            ? 'Pressione espaço, W ou seta para cima'
+            : 'Toque ou pressione espaço para subir');
+        if (mostrarDica) {
+          setTimeout(function () { $('dicaToque').hidden = true; }, 3200);
+        }
+
+        Game.start(inicio, aoTerminar);
+        iniciarHud();
+        if (document.hidden) pausar();
+      }).catch(function (erro) {
+        App.partidaAtiva = false;
+        gameIdDaPartida = null;
+        dadosNivelDaPartida = null;
+
+        // Trata antes de rotear. Na ordem inversa havia uma corrida: Rotas.ir
+        // agenda o render da tela como microtask, e tratarErro limpava o perfil
+        // no meio - o render entao lia perfil nulo.
+        tratarErro(erro);
+
+        // Se o erro nao mudou de tela sozinho, tira o usuario da tela de
+        // carregamento, que nao tem saida.
+        if (Rotas.atual === 'loading') Rotas.ir(App.token ? 'menu' : 'login');
+      });
+    }
+
+    /**
+     * @param {!Object} resultado Resultado bruto do motor.
+     */
+    function aoTerminar(resultado) {
+      if (envioFimEmAndamento || !gameIdDaPartida) return;
+      resultado.gameId = gameIdDaPartida;
+      resultadoPendente = resultado;
+      atualizarHud();
+      pararHud();
+      App.partidaAtiva = false;
+
+      texto('fimTitulo', resultado.completed ? 'Nível concluído' : 'Fim de jogo');
+      texto('fimSubtitulo', 'Compare a hipótese com o que você observou.');
+      texto('fimScore', numero(resultado.score));
+      texto('fimDist', numero(resultado.distance));
+      texto('fimCoins', numero(resultado.coins));
+      texto('fimRank', '-');
+      $('fimRecorde').hidden = true;
+      aviso('fimAviso', '');
+      $('btnProximo').disabled = true;
+      $('btnFimMenu').disabled = true;
+      $('btnSalvarCaderno').disabled = false;
+      $('btnSalvarCaderno').hidden = false;
+      $('btnSalvarRascunho').disabled = false;
+      texto('btnSalvarRascunho', 'Salvar rascunho');
+      $('btnSalvarRascunho').hidden = false;
+      texto('rascunhoAviso', '');
+      texto('predictionReview', 'Sua hipótese inicial: “' + hipoteseDaPartida + '”');
+      preencherParesCausais();
+      $('reflectionNote').value = '';
+      $('evidenceNote').value = '';
+      $('revisionNote').value = '';
+      $('overlayFim').classList.add('active');
+      $('causalPair').focus();
+      carregarRascunho(nivelDaPartida);
+    }
+
+    function preencherParesCausais() {
+      var select = $('causalPair');
+      select.textContent = '';
+      var placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Escolha uma relação';
+      select.appendChild(placeholder);
+      ((dadosNivelDaPartida && dadosNivelDaPartida.words) || []).forEach(function (pair) {
+        var option = document.createElement('option');
+        option.value = pair.word + ' → ' + pair.spits;
+        option.textContent = option.value;
+        select.appendChild(option);
+      });
+    }
+
+    function lerCadernoFormulario() {
+      return {
+        prediction: hipoteseDaPartida,
+        causalPair: $('causalPair').value,
+        mechanism: $('reflectionNote').value.trim(),
+        evidence: $('evidenceNote').value.trim(),
+        revision: $('revisionNote').value.trim()
+      };
+    }
+
+    function carregarRascunho(nivelId) {
+      if (!Api || typeof Api.lerRascunhoPedagogico !== 'function') return;
+      var pedido = ++rascunhoSequencia;
+      texto('rascunhoAviso', 'Verificando rascunho salvo…');
+      Api.lerRascunhoPedagogico(nivelId).then(function (resposta) {
+        if (pedido !== rascunhoSequencia || nivelDaPartida !== nivelId) return;
+        var draft = resposta && resposta.draft;
+        if (!draft) {
+          texto('rascunhoAviso', 'Nenhum rascunho anterior para este nível.');
+          return;
+        }
+        // A hipótese exibida continua sendo a desta partida; as demais
+        // respostas podem ser retomadas com segurança do rascunho do nível.
+        var select = $('causalPair');
+        if (draft.causalPair && Array.prototype.some.call(select.options, function (option) {
+          return option.value === draft.causalPair;
+        })) select.value = draft.causalPair;
+        $('reflectionNote').value = draft.mechanism || '';
+        $('evidenceNote').value = draft.evidence || '';
+        $('revisionNote').value = draft.revision || '';
+        texto('rascunhoAviso', 'Rascunho recuperado (' +
+            Number(resposta.completeness || 0) + '% completo).');
+      }).catch(function (erro) {
+        if (pedido !== rascunhoSequencia || nivelDaPartida !== nivelId) return;
+        if (ehSessaoInvalida(erro)) {
+          tratarErro(erro);
+          return;
+        }
+        texto('rascunhoAviso', 'Não foi possível recuperar o rascunho.');
+      });
+    }
+
+    function salvarRascunho() {
+      if (!nivelDaPartida || !Api || typeof Api.salvarRascunhoPedagogico !== 'function') return;
+      var botao = $('btnSalvarRascunho');
+      botao.disabled = true;
+      texto('btnSalvarRascunho', 'Salvando…');
+      Api.salvarRascunhoPedagogico(nivelDaPartida, lerCadernoFormulario())
+        .then(function (resposta) {
+          texto('rascunhoAviso', 'Rascunho salvo (' +
+              Number(resposta && resposta.completeness || 0) + '% completo).');
+        }).catch(function (erro) {
+          if (ehSessaoInvalida(erro)) {
+            tratarErro(erro);
+            return;
+          }
+          texto('rascunhoAviso', (erro && erro.message) || 'Não foi possível salvar o rascunho.');
+        }).then(function () {
+          botao.disabled = false;
+          texto('btnSalvarRascunho', 'Salvar rascunho');
+        });
+    }
+
+    function salvarCaderno() {
+      if (!resultadoPendente || envioFimEmAndamento) return;
+      var learning = lerCadernoFormulario();
+      if (!learning.causalPair || learning.mechanism.length < 16 ||
+          learning.evidence.length < 12 || learning.revision.length < 12) {
+        aviso('fimAviso', 'Escolha a relação e complete mecanismo, evidência e revisão.');
+        return;
+      }
+      envioFimEmAndamento = true;
+      $('btnSalvarCaderno').disabled = true;
+      aviso('fimAviso', 'Salvando o caderno...', true);
+      var resultado = resultadoPendente;
+      resultado.learning = learning;
+      var gameIdEnviado = gameIdDaPartida;
+
+      Api.encerrarPartida(resultado).then(function (fim) {
+        if (gameIdEnviado !== gameIdDaPartida) return;
+        ultimoResultado = fim;
+
+        // O servidor devolve o estado ja persistido; nenhuma regra de
+        // desbloqueio ou saldo e refeita no cliente.
+        aplicarEstadoDoServidor(fim.state);
+
+        texto('fimScore', numero(fim.score));
+        texto('fimCoins', numero((fim.earnedCoins || 0) +
+                                (fim.achievementRewardCoins || 0)));
+        texto('fimRank', fim.rank && fim.rank.rank ? '#' + fim.rank.rank : '-');
+        $('fimRecorde').hidden = !fim.isNewBest;
+
+        var nivel = buscarNivel(App.nivelAtual);
+        texto('fimSubtitulo', fim.completed
+            ? 'Próximo destino: ' + (nivel ? nivel.city : 'fim da jornada')
+            : 'Você percorreu ' + numero(resultado.distance) + ' m.');
+        texto('btnProximo', fim.completed && App.nivelAtual !== nivelDaPartida
+            ? 'Próximo nível' : 'Tentar de novo');
+        $('btnSalvarCaderno').hidden = true;
+        $('btnSalvarRascunho').hidden = true;
+        aviso('fimAviso', 'Caderno salvo. Agora você pode continuar.', true);
+      }).catch(function (erro) {
+        if (gameIdEnviado !== gameIdDaPartida) return;
+        if (ehSessaoInvalida(erro)) {
+          tratarErro(erro);
+          return;
+        }
+        // A partida acabou de qualquer forma: mostra o placar local e diz que o
+        // envio falhou, em vez de descartar o resultado da tela.
+        texto('fimSubtitulo', 'Caderno e resultado não registrados.');
+        aviso('fimAviso', (erro && erro.message) || 'Falha ao salvar o caderno.');
+        App.sujo.perfil = true;
+      }).then(function () {
+        if (gameIdEnviado !== gameIdDaPartida) return;
+        envioFimEmAndamento = false;
+        var salvo = ultimoResultado && ultimoResultado.learningJournalId;
+        $('btnSalvarCaderno').disabled = Boolean(salvo);
+        $('btnProximo').disabled = !salvo;
+        $('btnFimMenu').disabled = !salvo;
+      });
+    }
+
+    function pausar() {
+      if (!Game.isRunning()) return;
+      Game.pause();
+      $('overlayPause').classList.add('active');
+    }
+
+    function retomar() {
+      $('overlayPause').classList.remove('active');
+      Game.resume();
+    }
+
+    function fecharSobreposicoes() {
+      $('overlayPause').classList.remove('active');
+      $('overlayFim').classList.remove('active');
+      $('overlayPlano').classList.remove('active');
+    }
+
+    function atualizarHud() {
+      var s = Game.snapshot();
+      if (!s) return;
+      texto('hudScore', numero(s.pontos));
+      texto('hudDist', s.metros + ' / ' + s.alvoMetros);
+      texto('hudCoins', s.moedas);
+      texto('hudLives', s.vidas);
+      var barra = $('fuelFill');
+      barra.style.width = Math.round(s.combustivel * 100) + '%';
+      barra.classList.toggle('baixo', s.combustivel < 0.2);
+    }
+
+    function iniciarHud() {
+      pararHud();
+      function tique() {
+        atualizarHud();
+        tickerHud = requestAnimationFrame(tique);
+      }
+      tickerHud = requestAnimationFrame(tique);
+    }
+
+    function pararHud() {
+      if (tickerHud) cancelAnimationFrame(tickerHud);
+      tickerHud = null;
+    }
+
+    return { montar: montar, iniciar: iniciar };
+  })();
+
+  /**
+   * @param {number} id
+   * @return {?Object} Nivel, das constantes recebidas na abertura.
+   */
+  function buscarNivel(id) {
+    if (!App.constantes) return null;
+    var achados = App.constantes.levels.filter(function (n) { return n.id === id; });
+    return achados.length ? achados[0] : null;
+  }
+
+  // --- Inicializacao --------------------------------------------------------
+
+  function carregarBootstrap() {
+    if (bootstrapEmAndamento) return;
+    bootstrapEmAndamento = true;
+    Rotas.carregando('Conectando ao servidor...');
+
+    // Unica chamada da abertura. Nao passa pelo cliente gerado porque e ela que
+    // traz o contrato do qual o cliente e gerado.
+    invocar('api_bootstrap', [Guarda.ler()]).then(function (payload) {
+      App.token = payload.sessao.valida ? Guarda.ler() : null;
+      hidratar(payload);
+      Jogo.montar();
+      Rotas.ir(App.token ? 'menu' : 'login');
+    }).catch(function (erro) {
+      texto('loadingText', (erro && erro.message) || 'Não foi possível carregar o jogo.');
+      texto('loadingHint', 'Verifique sua conexão e tente novamente.');
+      texto('loadingDetail', 'O servidor não respondeu. Nenhum progresso foi alterado.');
+      $('loadingStatus').setAttribute('aria-busy', 'false');
+      $('loadingStatus').querySelector('.roda').hidden = true;
+      $('btnTentarNovamente').hidden = false;
+    }).then(function () {
+      bootstrapEmAndamento = false;
+    });
+  }
+
+  function iniciarAplicativo() {
+    Object.keys(Telas).forEach(function (nome) {
+      if (Telas[nome].montar) Telas[nome].montar();
+    });
+    carregarBootstrap();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', iniciarAplicativo);
+  } else {
+    iniciarAplicativo();
+  }
+})();
+</script>

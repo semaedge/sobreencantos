@@ -1,0 +1,111 @@
+<!-- Login.html - autenticação e registro, alternados no mesmo formulário. -->
+<section id="screen-login" class="screen" aria-labelledby="loginTitle">
+  <div>
+    <header class="cabecalho-tela">
+      <div class="auth-brand" data-brand-logo aria-label="Marca Sobre Encantos">
+        <img class="codex-login-logo" src="data:image/png;base64,<?!= includeInlineData('BrandLogoBase64') ?>" alt="Marca Sobre Encantos">
+      </div>
+      <p class="sobretitulo">Explore o Brasil</p>
+      <h1 class="titulo" id="loginTitle">Sobre Encantos</h1>
+      <p class="subtitulo" id="loginModoTexto">Entre para começar a voar.</p>
+    </header>
+
+    <form id="loginForm" autocomplete="on" novalidate aria-describedby="loginAviso" aria-busy="false">
+      <div class="campo">
+        <label for="loginUser">Usuário</label>
+        <input id="loginUser" name="username" type="text" inputmode="text" autocomplete="username"
+               autocapitalize="none" autocorrect="off" spellcheck="false"
+               enterkeyhint="next" minlength="3" maxlength="20" required
+               aria-describedby="loginUserHint" autofocus placeholder="seu.usuario">
+        <small class="ajuda-campo" id="loginUserHint">
+          De 3 a 20 caracteres: letras, números, ponto, hífen ou _.
+        </small>
+      </div>
+      <div class="campo">
+        <label for="loginPass">Senha</label>
+        <div class="password-control">
+          <input id="loginPass" name="password" type="password" inputmode="text"
+                 autocomplete="current-password" enterkeyhint="go"
+                 minlength="4" maxlength="128"
+                 required aria-describedby="loginPassHint">
+          <button class="password-toggle" id="btnMostrarSenha" type="button"
+                  aria-controls="loginPass" aria-pressed="false" aria-label="Mostrar senha"
+            ><i class="material-icons" aria-hidden="true">visibility</i></button>
+        </div>
+        <small class="ajuda-campo" id="loginPassHint">Mínimo de 4 caracteres. A senha fica registrada para apoio da escola.</small>
+      </div>
+      <div class="campo" id="campoEmail" hidden>
+        <label for="loginEmail">E-mail (opcional)</label>
+        <input id="loginEmail" name="email" type="email" autocomplete="email"
+               inputmode="email" autocapitalize="none" autocorrect="off"
+               spellcheck="false" enterkeyhint="go" maxlength="254">
+      </div>
+
+      <p class="aviso" id="loginAviso" role="alert" aria-live="assertive" aria-atomic="true"></p>
+      <button type="submit" id="btnEntrar" disabled>Entrar</button>
+    </form>
+
+    <p class="ajuda-campo" role="note"><strong>Uso pedagógico e privacidade:</strong>
+      progresso e produções são usados pela escola para acompanhamento da aprendizagem.
+      Ao continuar, você confirma ciência desse uso e dos termos de privacidade.</p>
+
+    <button class="fantasma" id="btnAlternarModo" type="button">Não tenho conta — criar agora</button>
+    <script>
+      (function () {
+        var form = document.getElementById('loginForm');
+        var user = document.getElementById('loginUser');
+        var pass = document.getElementById('loginPass');
+        var btnEntrar = document.getElementById('btnEntrar');
+        var aviso = document.getElementById('loginAviso');
+        var toggle = document.getElementById('btnMostrarSenha');
+
+        function atualizarEstado() {
+          var userOk = user.value.trim().length >= 3;
+          var passOk = pass.value.length >= 4;
+          btnEntrar.disabled = !(userOk && passOk);
+          user.setAttribute('aria-invalid', userOk ? 'false' : 'true');
+          pass.setAttribute('aria-invalid', passOk ? 'false' : 'true');
+        }
+
+        [user, pass].forEach(function (field) {
+          field.addEventListener('input', function () {
+            if (aviso.textContent) {
+              aviso.textContent = '';
+            }
+            atualizarEstado();
+          });
+        });
+
+        toggle.addEventListener('click', function () {
+          var showing = pass.type === 'text';
+          pass.type = showing ? 'password' : 'text';
+          toggle.setAttribute('aria-pressed', String(!showing));
+          toggle.setAttribute('aria-label', showing ? 'Mostrar senha' : 'Ocultar senha');
+          pass.focus();
+        });
+
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          if (user.value.trim().length < 3) {
+            aviso.textContent = 'Informe um usuário com pelo menos 3 caracteres.';
+            user.focus();
+            return;
+          }
+          if (pass.value.length < 4) {
+            aviso.textContent = 'A senha precisa ter pelo menos 4 caracteres.';
+            pass.focus();
+            return;
+          }
+          aviso.textContent = 'Autenticando...';
+        });
+
+        atualizarEstado();
+      }());
+    </script>
+    <p class="rodape">
+      Sua senha fica registrada na planilha da escola para que a coordenação
+      possa ajudar quem esquecer. Por isso, escolha uma senha exclusiva deste
+      jogo — nunca a mesma de outros serviços.
+    </p>
+  </div>
+</section>

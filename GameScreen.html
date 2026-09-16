@@ -1,0 +1,97 @@
+<!--
+  GameScreen.html
+  Canvas, HUD e as sobreposições de pausa, fim de partida e nível concluído.
+  Todas moram aqui porque pertencem ao mesmo contexto visual: a partida.
+-->
+<section id="screen-game" class="screen">
+  <?!= include('GameScene'); ?>
+  <div id="gameWrap">
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="hud">
+      <div class="bloco"><small>Pistas</small><span id="hudScore">0</span></div>
+      <div class="bloco"><small>Metros</small><span id="hudDist">0</span></div>
+      <div class="bloco"><small>Moedas</small><span id="hudCoins">0</span></div>
+      <div class="espaco"></div>
+      <div class="bloco">
+        <small>Combustível</small>
+        <div id="fuelBar"><div id="fuelFill"></div></div>
+      </div>
+      <div class="bloco"><small>Vidas</small><span id="hudLives">3</span></div>
+    </div>
+
+    <button id="btnPause" type="button" aria-label="Pausar">II</button>
+    <p class="toque" id="dicaToque">Toque ou pressione espaço para subir</p>
+
+    <!-- Plano anterior à ação: nenhuma partida é aberta no servidor antes dele. -->
+    <div class="overlay" id="overlayPlano">
+      <div>
+        <p class="sobretitulo">Antes do voo</p>
+        <h2 class="titulo" style="font-size:24px">Faça uma hipótese</h2>
+        <p class="subtitulo" id="planoDestino"></p>
+        <label for="predictionNote">O que você espera descobrir sobre as relações deste território?</label>
+        <textarea id="predictionNote" rows="4" maxlength="600"
+          placeholder="Minha hipótese é que..."></textarea>
+        <small>Registre ao menos uma frase curta. Você poderá revisá-la ao final.</small>
+        <p class="aviso" id="planoAviso" role="status" aria-live="polite"></p>
+        <button id="btnComecarNivel" type="button">Começar com esta hipótese</button>
+        <button class="secundario" id="btnCancelarPlano" type="button">Escolher outro destino</button>
+      </div>
+    </div>
+
+    <!-- Pausa -->
+    <div class="overlay" id="overlayPause">
+      <div>
+        <h2 class="titulo" style="font-size:24px">Pausado</h2>
+        <p class="subtitulo" id="pauseLocal"></p>
+        <button id="btnRetomar" type="button">Continuar</button>
+        <button class="secundario" id="btnReiniciar" type="button">Reiniciar nível</button>
+        <button class="fantasma" id="btnAbandonar" type="button">Abandonar partida</button>
+      </div>
+    </div>
+
+    <!-- Fim de partida / nível concluído -->
+    <div class="overlay" id="overlayFim">
+      <div>
+        <h2 class="titulo" style="font-size:26px" id="fimTitulo">Fim de jogo</h2>
+        <p class="subtitulo" id="fimSubtitulo"></p>
+
+        <div class="placar">
+          <div class="valor" id="fimScore">0</div>
+          <div class="rotulo">Pistas encontradas</div>
+          <div class="recorde" id="fimRecorde" hidden>Novo recorde!</div>
+        </div>
+
+        <div class="detalhes">
+          <div><b id="fimDist">0</b><span>Metros</span></div>
+          <div><b id="fimCoins">0</b><span>Pistas</span></div>
+          <div><b id="fimRank">-</b><span>Posição</span></div>
+        </div>
+
+        <div class="pergunta-reflexao">
+          <strong>Feche o caderno antes de seguir</strong>
+          <span id="predictionReview"></span>
+          <label for="causalPair">Qual relação apareceu no território?</label>
+          <select id="causalPair"></select>
+          <label for="reflectionNote">Como essa ação pode produzir a consequência?</label>
+          <textarea id="reflectionNote" rows="3" maxlength="800" placeholder="Isso pode acontecer porque..."></textarea>
+          <label for="evidenceNote">Que evidência você observou no percurso?</label>
+          <textarea id="evidenceNote" rows="2" maxlength="600" placeholder="Durante o jogo, observei..."></textarea>
+          <label for="revisionNote">O que mudou ou permaneceu na sua hipótese?</label>
+          <textarea id="revisionNote" rows="2" maxlength="600" placeholder="Agora eu manteria ou mudaria..."></textarea>
+          <small>Velocidade e colisões são parte do jogo; o caderno registra o raciocínio sobre o território.</small>
+        </div>
+        <div class="acoes-rascunho" aria-label="Rascunho do caderno">
+          <button class="secundario compacto" id="btnSalvarRascunho" type="button">
+            Salvar rascunho
+          </button>
+          <span id="rascunhoAviso" role="status" aria-live="polite"></span>
+        </div>
+        <p class="aviso" id="fimAviso"></p>
+        <button id="btnSalvarCaderno" type="button">Salvar caderno e concluir</button>
+        <button id="btnProximo" type="button">Jogar de novo</button>
+        <button class="secundario" id="btnFimMenu" type="button">Voltar ao menu</button>
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,92 @@
+<!--
+  Index.html
+  Shell do aplicativo. Unica pagina servida por doGet: as telas sao includes
+  exibidos e ocultados pelo roteador em JavaScript.html, porque cada navegacao
+  real no Apps Script custaria um novo carregamento do iframe.
+-->
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <?!= include('Stylesheet') ?>
+    <?!= include('UX_Standards') ?>
+    <script>window.SobreEncantosBrandLogo = 'data:image/png;base64,<?!= includeInlineData("BrandLogoBase64") ?>';</script>
+    <style id="fleet-mobile-wcag-aa">
+    /* Contrato FROTA: ergonomia S20 e WCAG 2.1 AA. */
+    html, body { max-width: 100%; overflow-x: hidden; }
+    :is(button, [role="button"], input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
+      min-width: 48px !important;
+      min-height: 48px !important;
+      touch-action: manipulation;
+    }
+  </style>
+</head>
+  <body>
+    <div id="app">
+      <?!= include('LoadingScreen') ?>
+      <?!= include('Login') ?>
+      <?!= include('MainMenu') ?>
+      <?!= include('LevelSelection') ?>
+      <?!= include('GameScreen') ?>
+      <?!= include('Leaderboard') ?>
+      <?!= include('Settings') ?>
+
+      <!--
+        Destino unico para mensagem que nao pertence a nenhum formulario. Sem
+        ele, um erro sem tela de destino acabava jogando o usuario na tela de
+        carregamento, que nao tem botao de saida.
+      -->
+      <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+    </div>
+
+    <!-- Montado estaticamente para que o estado da conexao seja observavel
+         mesmo antes do script de health check terminar. -->
+    <div id="codex-backend-status" class="codex-backend-status" role="status"
+         aria-live="polite" title="Estado da conexão com o jogo">
+      Conectando ao jogo…
+    </div>
+
+    <?!= include('Game') ?>
+    <?!= include('RankingVizinhancaUI') ?>
+    <?!= include('JavaScript') ?>
+    <?!= include('HealthCheck') ?>
+  <!-- fleet-method-guide:start -->
+<style>
+  .fleet-method-guide { box-sizing: border-box; flex: 0 0 auto; grid-column: 1 / -1; width: calc(100% - 2rem); max-width: 64rem; margin: 1rem auto; border: 1px solid currentColor; border-radius: .65rem; color: inherit; background: inherit; font: inherit; }
+  .fleet-method-guide > summary { cursor: pointer; padding: .75rem 1rem; min-height: 44px; box-sizing: border-box; font-weight: 600; overflow-wrap: anywhere; }
+  .fleet-method-guide > summary:focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }
+  .fleet-method-guide .fleet-method-content { padding: 0 1rem 1rem; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain; }
+  .fleet-method-guide p { margin: .5rem 0; line-height: 1.5; overflow-wrap: anywhere; }
+  .fleet-method-guide dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: .35rem; margin: .75rem 0 1rem; }
+  .fleet-method-guide dt { font-weight: 600; margin-top: .5rem; }
+  .fleet-method-guide dd { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+  @media print { .fleet-method-guide { display: none; } }
+</style>
+<details class="fleet-method-guide" data-project="sobre_encantos">
+  <summary>Como conduzir esta atividade</summary>
+  <div class="fleet-method-content">
+    <p>Sobre Encantos</p>
+    <section aria-label="Para quem participa">
+      <p><strong>Para quem participa</strong></p>
+      <dl>
+        <dt>Propósito</dt><dd>Explorar capitais brasileiras e relações de causa e consequência.</dd>
+        <dt>Ação</dt><dd>Percorrer o nível, interpretar obstáculos-palavra e ajustar a estratégia.</dd>
+        <dt>Fechamento</dt><dd>Explicar uma relação aprendida e escolher o próximo percurso.</dd>
+      </dl>
+    </section>
+    <section aria-label="Para quem conduz a turma">
+      <p><strong>Para quem conduz a turma</strong></p>
+      <dl>
+        <dt>Propósito</dt><dd>Mediar geografia, leitura e coordenação motora em ritmo inclusivo.</dd>
+        <dt>Ação</dt><dd>Acompanhar progresso, oferecer alternativas e apoiar retomadas.</dd>
+        <dt>Fechamento</dt><dd>Conduzir uma síntese sobre lugares e relações linguísticas.</dd>
+      </dl>
+    </section>
+  </div>
+</details>
+<!-- fleet-method-guide:end -->
+</body>
+</html>

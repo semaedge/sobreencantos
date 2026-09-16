@@ -1,0 +1,980 @@
+<!--
+  Game.html
+  Motor do jogo, no cliente. Roda a 60 passos por segundo com passo fixo, para
+  que a fisica nao dependa da taxa de quadros do aparelho.
+
+  Divisao de responsabilidades com o backend: aqui ficam laco, fisica, colisao
+  e desenho; as constantes (gravidade, empuxo, pontuacao, niveis) vem de
+  api_getGameData() e api_startGame(). O placar enviado em api_endGame e o
+  bruto - o multiplicador de dificuldade e o bonus de conclusao sao aplicados
+  no servidor, que nao confia no cliente.
+-->
+<script>
+  var Game = (function () {
+    'use strict';
+
+    var PASSO_MS = 1000 / 60;
+    var MAX_PASSOS_POR_QUADRO = 5;
+    var ALTURA_CHAO = 48;
+    var INVULNERAVEL_MS = 1400;
+
+    // Obstaculo-palavra: placa pendurada no teto que ensina um par de ideias.
+    var PALAVRA_ALTURA = 56;      // altura da placa, incluindo a corda
+    var PALAVRA_FONTE = 22;
+    var PALAVRA_CUSPE_X = 0.66;   // fracao da largura em que a placa cospe
+    var CUSPIDA_FONTE = 19;
+    var CUSPIDA_VELOCIDADE = 2.4;
+    var LICAO_MS = 6000;          // tempo que a frase explicativa fica na tela
+
+    /** Par usado quando o nivel vem do backend sem conteudo didatico. */
+    var PAR_PADRAO = {
+      word: 'DESCUIDO',
+      spits: 'ACIDENTE',
+      hint: 'Todo acidente comeca com um descuido que ninguem corrigiu a tempo.'
+    };
+
+    /** Paletas por nivel, casando com o campo `palette` de GameConstants.gs. */
+    var PALETAS = {
+      mataAtlantica:   { ceu: ['#1d3f2e', '#4e8f5f'], morros: ['#163325', '#0f2419'], chao: '#123020', acento: '#7ee787' },
+      baiaGuanabara:   { ceu: ['#1b3b5c', '#6fa8c9'], morros: ['#16324a', '#0e2233'], chao: '#123044', acento: '#8fd3ff' },
+      cerrado:         { ceu: ['#5c3f1d', '#c98f4e'], morros: ['#4a3218', '#2f200f'], chao: '#3d2b14', acento: '#f4c744' },
+      litoralNordeste: { ceu: ['#125e6b', '#59c7c1'], morros: ['#0f4a54', '#0a3239'], chao: '#12545c', acento: '#7fe8dd' },
+      dunasBahia:      { ceu: ['#6b4a1d', '#dfc07a'], morros: ['#8a6a34', '#5c4620'], chao: '#7a5c2c', acento: '#ffe08a' },
+      serraMineira:    { ceu: ['#3b2b3f', '#8a6d84'], morros: ['#2e2231', '#1d1620'], chao: '#2a1f2c', acento: '#d9a8cf' },
+      amazonia:        { ceu: ['#123c2c', '#3f8f6a'], morros: ['#0d2e21', '#081d15'], chao: '#0d2a1f', acento: '#5ee6a0' },
+      araucaria:       { ceu: ['#1f3348', '#7f9bb5'], morros: ['#19293a', '#101b26'], chao: '#16242f', acento: '#a8cfe8' },
+      recifeCoral:     { ceu: ['#0f4a5c', '#4fb3c9'], morros: ['#0c3b49', '#08262f'], chao: '#0e3d4a', acento: '#ff9e7a' },
+      cerradoGoiano:   { ceu: ['#4f3a1c', '#b8934e'], morros: ['#3f2e16', '#281d0e'], chao: '#35270f', acento: '#ffd166' }
+    };
+    var PALETA_PADRAO = PALETAS.mataAtlantica;
+
+    var canvas = null;
+    var ctx = null;
+    var largura = 0;      // largura logica visivel
+    var altura = 0;       // altura logica (fixa pelo viewport do backend)
+    var escala = 1;
+
+    var cfg = null;       // resposta de api_startGame
+    var dados = null;     // resposta de api_getGameData
+    var estado = null;
+    var aoTerminar = null;
+    var rodando = false;
+    var pausado = false;
+    var quadro = null;
+    var ultimoTempo = 0;
+    var acumulador = 0;
+    var empuxoAtivo = false;
+
+    // --- Ciclo de vida --------------------------------------------------------
+
+    /**
+     * Prepara o canvas e registra a entrada do jogador. Chamar uma vez.
+     * @param {!HTMLCanvasElement} el
+     * @param {!Object} gameData Resposta de api_getGameData().
+     */
+    function init(el, gameData) {
+      canvas = el;
+      ctx = canvas.getContext('2d');
+      dados = gameData;
+      altura = dados.viewport.tilesY * dados.tileSize;
+
+      window.addEventListener('resize', redimensionar);
+      redimensionar();
+
+      canvas.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        empuxoAtivo = true;
+      });
+      window.addEventListener('pointerup', function () { empuxoAtivo = false; });
+      window.addEventListener('pointercancel', function () { empuxoAtivo = false; });
+
+      window.addEventListener('keydown', function (e) {
+        if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+          e.preventDefault();
+          empuxoAtivo = true;
+        }
+      });
+      window.addEventListener('keyup', function (e) {
+        if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+          empuxoAtivo = false;
+        }
+      });
+    }
+
+    /** Ajusta a resolucao do canvas ao tamanho real na tela. */
+    function redimensionar() {
+      if (!canvas) return;
+      var dpr = window.devicePixelRatio || 1;
+      var w = canvas.clientWidth || window.innerWidth;
+      var h = canvas.clientHeight || window.innerHeight;
+
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+
+      // A escala vem da altura: o espaco vertical de jogo e igual em qualquer
+      // aparelho, e telas mais largas apenas enxergam mais adiante.
+      escala = (h / altura) * dpr;
+      largura = canvas.width / escala;
+      if (rodando && pausado) desenhar();
+    }
+
+    /**
+     * Comeca uma partida.
+     * @param {!Object} inicio Resposta de api_startGame().
+     * @param {function(!Object)} callbackFim Recebe o resultado bruto da partida.
+     */
+    function start(inicio, callbackFim) {
+      cfg = inicio;
+      aoTerminar = callbackFim;
+      estado = criarEstado();
+      pausado = false;
+      rodando = true;
+      empuxoAtivo = false;
+      ultimoTempo = 0;
+      acumulador = 0;
+      redimensionar();
+      quadro = requestAnimationFrame(laco);
+    }
+
+    /** Interrompe a partida sem avisar o backend. */
+    function stop() {
+      rodando = false;
+      pausado = false;
+      if (quadro) cancelAnimationFrame(quadro);
+      quadro = null;
+    }
+
+    function pause() {
+      if (!rodando || pausado) return;
+      pausado = true;
+      empuxoAtivo = false;
+      if (quadro) cancelAnimationFrame(quadro);
+      quadro = null;
+    }
+
+    function resume() {
+      if (!rodando || !pausado) return;
+      pausado = false;
+      ultimoTempo = 0;
+      acumulador = 0;
+      quadro = requestAnimationFrame(laco);
+    }
+
+    /** @return {boolean} */
+    function isRunning() { return rodando && !pausado; }
+
+    /** @return {!Object} Estado inicial de uma partida. */
+    function criarEstado() {
+      var jogador = dados.player;
+      return {
+        palavras: [],
+        palavrasCuspidas: [],
+        filaPalavras: montarFilaDePalavras(),
+        indicePalavra: 0,
+        licao: null,
+        jogadorY: altura / 2,
+        velocidadeY: 0,
+        combustivel: jogador.MAX_FUEL,
+        vidas: jogador.START_LIVES,
+        distanciaPx: 0,
+        metros: 0,
+        moedas: 0,
+        pontos: 0,
+        obstaculos: [],
+        moedasMundo: [],
+        inimigos: [],
+        proximoObstaculo: 90,
+        proximaMoeda: 150,
+        proximoInimigo: 260,
+        invulneravelAte: 0,
+        tempoMs: 0,
+        terminou: false,
+        concluiu: false
+      };
+    }
+
+    /**
+     * Distribui os pares didaticos do nivel ao longo do percurso, um por marco
+     * de distancia. Com n pares, o primeiro cai em 1/(n+1) do caminho: todo
+     * nivel mostra ao menos uma palavra antes da metade, mesmo o mais curto.
+     * @return {!Array<!Object>} Itens {par, metro}.
+     */
+    function montarFilaDePalavras() {
+      var pares = (cfg.level.words && cfg.level.words.length)
+          ? cfg.level.words
+          : [PAR_PADRAO];
+      var total = cfg.level.lengthMeters;
+
+      return pares.map(function (par, i) {
+        return { par: par, metro: Math.round(total * (i + 1) / (pares.length + 1)) };
+      });
+    }
+
+    // --- Laco -----------------------------------------------------------------
+
+    /** @param {number} agora */
+    function laco(agora) {
+      if (!rodando || pausado) return;
+
+      if (!ultimoTempo) ultimoTempo = agora;
+      acumulador += agora - ultimoTempo;
+      ultimoTempo = agora;
+
+      // Teto de passos: se a aba ficou em segundo plano, descarta o atraso em
+      // vez de simular minutos de jogo de uma vez.
+      var passos = 0;
+      while (acumulador >= PASSO_MS && passos < MAX_PASSOS_POR_QUADRO) {
+        atualizar();
+        acumulador -= PASSO_MS;
+        passos++;
+        if (estado.terminou) break;
+      }
+      if (acumulador > PASSO_MS * MAX_PASSOS_POR_QUADRO) acumulador = 0;
+
+      desenhar();
+
+      if (estado.terminou) {
+        finalizar();
+        return;
+      }
+      quadro = requestAnimationFrame(laco);
+    }
+
+    /** Um passo de simulacao. */
+    function atualizar() {
+      // Fisica, jogador e pontuacao vem das constantes recebidas na abertura -
+      // fonte unica. De cfg sai apenas o que e desta partida: nivel e
+      // dificuldade.
+      var fis = dados.physics;
+      var jog = dados.player;
+      estado.tempoMs += PASSO_MS;
+
+      // Empuxo e combustivel.
+      var subindo = empuxoAtivo && estado.combustivel > 0;
+      if (subindo) {
+        estado.velocidadeY += fis.THRUST;
+        estado.combustivel = Math.max(0, estado.combustivel - jog.FUEL_BURN_PER_FRAME);
+      } else {
+        estado.combustivel = Math.min(jog.MAX_FUEL,
+                                      estado.combustivel + jog.FUEL_REGEN_PER_FRAME);
+      }
+
+      estado.velocidadeY += fis.GRAVITY;
+      estado.velocidadeY = Math.max(fis.MAX_RISE_SPEED,
+                                    Math.min(fis.MAX_FALL_SPEED, estado.velocidadeY));
+      estado.jogadorY += estado.velocidadeY;
+
+      // Chao e teto sao solidos, nao causam dano.
+      var limiteBaixo = altura - ALTURA_CHAO - jog.HITBOX_HEIGHT / 2;
+      var limiteAlto = jog.HITBOX_HEIGHT / 2;
+      if (estado.jogadorY > limiteBaixo) {
+        estado.jogadorY = limiteBaixo;
+        estado.velocidadeY = 0;
+      }
+      if (estado.jogadorY < limiteAlto) {
+        estado.jogadorY = limiteAlto;
+        estado.velocidadeY = 0;
+      }
+
+      // Avanco do mundo.
+      var passoX = fis.SCROLL_SPEED;
+      estado.distanciaPx += passoX;
+      var metrosAntes = estado.metros;
+      estado.metros = Math.floor(estado.distanciaPx / dados.tileSize);
+      estado.pontos += (estado.metros - metrosAntes) * dados.scoring.POINTS_PER_METER;
+
+      moverEntidades(passoX);
+      gerarEntidades();
+      verificarColisoes();
+
+      if (estado.metros >= cfg.level.lengthMeters) {
+        estado.concluiu = true;
+        estado.terminou = true;
+      } else if (estado.vidas <= 0) {
+        estado.concluiu = false;
+        estado.terminou = true;
+      }
+    }
+
+    /** @param {number} passoX */
+    function moverEntidades(passoX) {
+      estado.obstaculos.forEach(function (o) { o.x -= passoX; });
+      estado.moedasMundo.forEach(function (m) { m.x -= passoX; });
+
+      estado.palavras.forEach(function (pal) {
+        pal.x -= passoX;
+        // Cada placa cospe uma unica vez, quando chega perto do jogador.
+        if (!pal.cuspiu && pal.x <= largura * PALAVRA_CUSPE_X) {
+          pal.cuspiu = true;
+          cuspirPalavra(pal);
+        }
+      });
+      estado.palavras = estado.palavras.filter(function (pal) {
+        return pal.x + pal.w > -60;
+      });
+
+      estado.palavrasCuspidas.forEach(function (c) {
+        c.x -= passoX + CUSPIDA_VELOCIDADE;
+        c.fase += 0.07;
+        c.y = c.baseY + Math.sin(c.fase) * 16;
+      });
+      // Palavra cuspida que passa sem acertar vale pontos: desviar e aprender.
+      estado.palavrasCuspidas = estado.palavrasCuspidas.filter(function (c) {
+        if (c.x + c.w > -60) return true;
+        if (!c.acertou) {
+          estado.pontos += dados.scoring.POINTS_PER_WORD_DODGE ||
+                           dados.scoring.POINTS_PER_ENEMY;
+        }
+        return false;
+      });
+
+      estado.inimigos.forEach(function (i) {
+        i.x -= passoX + i.velocidade;
+        if (i.tipo === 'bird') {
+          i.fase += 0.06;
+          i.y = i.baseY + Math.sin(i.fase) * 42;
+        } else if (i.tipo === 'balloon') {
+          i.y -= 0.5;
+        }
+      });
+
+      estado.obstaculos = estado.obstaculos.filter(function (o) {
+        return o.x + o.w > -40;
+      });
+      estado.moedasMundo = estado.moedasMundo.filter(function (m) {
+        return m.x > -40 && !m.coletada;
+      });
+
+      // Inimigo que sai da tela sem acertar o jogador vale a esquiva.
+      estado.inimigos = estado.inimigos.filter(function (i) {
+        if (i.x + i.w > -40) return true;
+        if (!i.acertou) estado.pontos += dados.scoring.POINTS_PER_ENEMY;
+        return false;
+      });
+    }
+
+    /** Cria obstaculos, moedas e inimigos conforme os contadores. */
+    function gerarEntidades() {
+      var dif = cfg.difficulty;
+      var borda = largura + 60;
+
+      var fila = estado.filaPalavras;
+      if (estado.indicePalavra < fila.length &&
+          estado.metros >= fila[estado.indicePalavra].metro) {
+        criarPalavra(borda, fila[estado.indicePalavra].par);
+        estado.indicePalavra++;
+        // Afasta o proximo obstaculo comum: a passagem sob a placa precisa
+        // estar livre para o jogador conseguir ler o par.
+        estado.proximoObstaculo = Math.max(estado.proximoObstaculo, 130);
+      }
+
+      estado.proximoObstaculo -= 1;
+      if (estado.proximoObstaculo <= 0) {
+        criarObstaculo(borda);
+        estado.proximoObstaculo = Math.round((110 + Math.random() * 90) / dif.spawnRate);
+      }
+
+      estado.proximaMoeda -= 1;
+      if (estado.proximaMoeda <= 0) {
+        criarGrupoDeMoedas(borda);
+        estado.proximaMoeda = Math.round(150 + Math.random() * 160);
+      }
+
+      estado.proximoInimigo -= 1;
+      if (estado.proximoInimigo <= 0) {
+        criarInimigo(borda);
+        estado.proximoInimigo = Math.round((190 + Math.random() * 170) / dif.spawnRate);
+      }
+    }
+
+    /** @param {number} x */
+    function criarObstaculo(x) {
+      var util = altura - ALTURA_CHAO;
+      var larguraObs = 26 + Math.random() * 20;
+      var doTeto = Math.random() < 0.45;
+      var comprimento = util * (0.18 + Math.random() * 0.3);
+
+      estado.obstaculos.push({
+        x: x,
+        y: doTeto ? 0 : util - comprimento,
+        w: larguraObs,
+        h: comprimento,
+        doTeto: doTeto
+      });
+    }
+
+    /**
+     * Placa-palavra pendurada no teto, com o par didatico guardado nela.
+     * @param {number} x
+     * @param {!Object} par Campos: word, spits, hint.
+     */
+    function criarPalavra(x, par) {
+      // Em tela estreita (celular em pe) a area logica visivel e curta: a placa
+      // encolhe a fonte ate caber, em vez de tapar a passagem inteira.
+      var fonte = fonteQueCabe(par.word, PALAVRA_FONTE, largura * 0.72 - 34, true);
+
+      estado.palavras.push({
+        x: x,
+        y: 0,
+        w: medirTexto(par.word, fonte, true) + 34,
+        h: PALAVRA_ALTURA,
+        fonte: fonte,
+        texto: par.word,
+        resposta: par.spits,
+        licao: par.hint || '',
+        cuspiu: false
+      });
+    }
+
+    /**
+     * Lanca a palavra associada, uma unica vez por placa, e mostra a frase que
+     * explica o vinculo entre as duas.
+     * @param {!Object} pal Placa que esta cuspindo.
+     */
+    function cuspirPalavra(pal) {
+      var fonte = fonteQueCabe(pal.resposta, CUSPIDA_FONTE, largura * 0.6 - 24, true);
+      var y = pal.h + 34;
+
+      estado.palavrasCuspidas.push({
+        x: pal.x + pal.w / 2,
+        y: y,
+        baseY: y,
+        w: medirTexto(pal.resposta, fonte, true) + 24,
+        h: fonte + 14,
+        fonte: fonte,
+        texto: pal.resposta,
+        dano: 1,
+        fase: 0,
+        acertou: false
+      });
+
+      estado.licao = {
+        par: pal.texto + '  →  ' + pal.resposta,
+        frase: pal.licao,
+        ate: estado.tempoMs + LICAO_MS
+      };
+    }
+
+    /**
+     * @param {string} texto
+     * @param {number} tamanho
+     * @param {boolean=} negrito
+     * @return {number} Largura do texto em unidades logicas.
+     */
+    function medirTexto(texto, tamanho, negrito) {
+      ctx.save();
+      ctx.font = fonteDe(tamanho, negrito);
+      var largTexto = ctx.measureText(texto).width;
+      ctx.restore();
+      return largTexto;
+    }
+
+    /**
+     * @param {number} tamanho
+     * @param {boolean=} negrito
+     * @return {string}
+     */
+    function fonteDe(tamanho, negrito) {
+      return (negrito ? '700 ' : '600 ') + tamanho +
+             'px "Segoe UI", system-ui, sans-serif';
+    }
+
+    /**
+     * Maior tamanho de fonte, a partir do pedido, em que o texto ainda cabe.
+     * @param {string} texto
+     * @param {number} tamanhoBase
+     * @param {number} larguraMax
+     * @param {boolean=} negrito
+     * @return {number}
+     */
+    function fonteQueCabe(texto, tamanhoBase, larguraMax, negrito) {
+      var tamanho = tamanhoBase;
+      while (tamanho > 11 && medirTexto(texto, tamanho, negrito) > larguraMax) {
+        tamanho -= 1;
+      }
+      return tamanho;
+    }
+
+    /**
+     * Quebra a frase em linhas que cabem na largura dada.
+     * @param {string} texto
+     * @param {number} tamanho
+     * @param {number} larguraMax
+     * @return {!Array<string>}
+     */
+    function quebrarTexto(texto, tamanho, larguraMax) {
+      var palavras = texto.split(' ');
+      var linhas = [];
+      var atual = '';
+
+      palavras.forEach(function (palavra) {
+        var tentativa = atual ? atual + ' ' + palavra : palavra;
+        if (atual && medirTexto(tentativa, tamanho) > larguraMax) {
+          linhas.push(atual);
+          atual = palavra;
+        } else {
+          atual = tentativa;
+        }
+      });
+      if (atual) linhas.push(atual);
+      return linhas;
+    }
+
+    /** @param {number} x */
+    function criarGrupoDeMoedas(x) {
+      var quantidade = 3 + Math.floor(Math.random() * 4);
+      var centro = 60 + Math.random() * (altura - ALTURA_CHAO - 140);
+      var arco = Math.random() < 0.5;
+
+      for (var i = 0; i < quantidade; i++) {
+        estado.moedasMundo.push({
+          x: x + i * 34,
+          y: centro + (arco ? Math.sin(i / (quantidade - 1) * Math.PI) * -46 : 0),
+          r: 9,
+          coletada: false
+        });
+      }
+    }
+
+    /** @param {number} x */
+    function criarInimigo(x) {
+      var tipos = dados.enemies;
+      var tipo = tipos[Math.floor(Math.random() * tipos.length)];
+      var y = 50 + Math.random() * (altura - ALTURA_CHAO - 110);
+
+      estado.inimigos.push({
+        tipo: tipo.id,
+        nome: tipo.name,
+        x: x,
+        y: y,
+        baseY: y,
+        w: 30,
+        h: 24,
+        velocidade: tipo.speed * cfg.difficulty.enemySpeed,
+        dano: tipo.damage,
+        fase: Math.random() * Math.PI * 2,
+        acertou: false
+      });
+    }
+
+    /** Colisoes do jogador com moedas, obstaculos e inimigos. */
+    function verificarColisoes() {
+      var jog = dados.player;
+      var px = jogadorX();
+      var caixa = {
+        x: px - jog.HITBOX_WIDTH / 2,
+        y: estado.jogadorY - jog.HITBOX_HEIGHT / 2,
+        w: jog.HITBOX_WIDTH,
+        h: jog.HITBOX_HEIGHT
+      };
+
+      estado.moedasMundo.forEach(function (m) {
+        if (m.coletada) return;
+        if (Math.abs(m.x - px) < m.r + caixa.w / 2 &&
+            Math.abs(m.y - estado.jogadorY) < m.r + caixa.h / 2) {
+          m.coletada = true;
+          estado.moedas++;
+          estado.pontos += dados.scoring.POINTS_PER_COIN;
+        }
+      });
+
+      if (estado.tempoMs < estado.invulneravelAte) return;
+
+      var bateu = null;
+      estado.obstaculos.some(function (o) {
+        if (colide(caixa, { x: o.x, y: o.y, w: o.w, h: o.h })) { bateu = 1; return true; }
+        return false;
+      });
+      if (!bateu) {
+        estado.palavras.some(function (pal) {
+          if (colide(caixa, { x: pal.x, y: pal.y, w: pal.w, h: pal.h })) {
+            bateu = 1;
+            return true;
+          }
+          return false;
+        });
+      }
+      if (!bateu) {
+        estado.palavrasCuspidas.some(function (c) {
+          if (colide(caixa, { x: c.x, y: c.y - c.h / 2, w: c.w, h: c.h })) {
+            c.acertou = true;
+            bateu = c.dano;
+            return true;
+          }
+          return false;
+        });
+      }
+      if (!bateu) {
+        estado.inimigos.some(function (i) {
+          if (colide(caixa, { x: i.x, y: i.y - i.h / 2, w: i.w, h: i.h })) {
+            i.acertou = true;
+            bateu = i.dano;
+            return true;
+          }
+          return false;
+        });
+      }
+
+      if (bateu) {
+        estado.vidas -= bateu;
+        estado.invulneravelAte = estado.tempoMs + INVULNERAVEL_MS;
+        estado.velocidadeY = -4;
+      }
+    }
+
+    /**
+     * @param {!Object} a
+     * @param {!Object} b
+     * @return {boolean}
+     */
+    function colide(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x &&
+             a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    /** @return {number} X logico do jogador. */
+    function jogadorX() { return Math.max(90, largura * 0.24); }
+
+    /** Encerra a partida e devolve o resultado bruto. */
+    function finalizar() {
+      rodando = false;
+      empuxoAtivo = false;
+      if (aoTerminar) {
+        aoTerminar({
+          score: estado.pontos,
+          distance: estado.metros,
+          coins: estado.moedas,
+          completed: estado.concluiu
+        });
+      }
+    }
+
+    // --- Desenho --------------------------------------------------------------
+
+    function desenhar() {
+      if (!ctx || !estado) return;
+      var p = PALETAS[cfg.level.palette] || PALETA_PADRAO;
+
+      ctx.setTransform(escala, 0, 0, escala, 0, 0);
+      ctx.clearRect(0, 0, largura, altura);
+
+      desenharCeu(p);
+      desenharMorros(p, 0.18, altura - ALTURA_CHAO - 30, 46);
+      desenharMorros(p, 0.42, altura - ALTURA_CHAO + 6, 30, true);
+      desenharChao(p);
+      desenharObstaculos(p);
+      desenharMoedas();
+      desenharInimigos(p);
+      desenharJogador();
+      desenharPalavras(p);
+      desenharPalavrasCuspidas(p);
+      desenharLicao(p);
+    }
+
+    /**
+     * Placas didaticas penduradas no teto. Ficam por cima do jogador para que o
+     * texto continue legivel quando ele passa raspando.
+     * @param {!Object} p
+     */
+    function desenharPalavras(p) {
+      estado.palavras.forEach(function (pal) {
+        var alturaPlaca = pal.h - 14;
+
+        ctx.strokeStyle = p.acento;                    // cordas
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pal.x + 14, 0);
+        ctx.lineTo(pal.x + 14, 14);
+        ctx.moveTo(pal.x + pal.w - 14, 0);
+        ctx.lineTo(pal.x + pal.w - 14, 14);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = '#12161cee';                   // placa
+        ctx.fillRect(pal.x, 14, pal.w, alturaPlaca);
+        ctx.strokeStyle = p.acento;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(pal.x + 1, 15, pal.w - 2, alturaPlaca - 2);
+
+        ctx.fillStyle = '#f5f8fb';
+        ctx.font = fonteDe(pal.fonte, true);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(pal.texto, pal.x + pal.w / 2, 14 + alturaPlaca / 2 + 1);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      });
+    }
+
+    /** @param {!Object} p */
+    function desenharPalavrasCuspidas(p) {
+      estado.palavrasCuspidas.forEach(function (c) {
+        var topo = c.y - c.h / 2;
+
+        ctx.fillStyle = '#ff6b3d';
+        ctx.globalAlpha = 0.9;
+        ctx.fillRect(c.x, topo, c.w, c.h);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#ffd7a8';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(c.x + 1, topo + 1, c.w - 2, c.h - 2);
+
+        ctx.fillStyle = '#1a0f08';
+        ctx.font = fonteDe(c.fonte, true);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(c.texto, c.x + c.w / 2, c.y + 1);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      });
+    }
+
+    /**
+     * Faixa com o par e a frase que o explica, logo acima do chao para nao
+     * disputar espaco com o HUD. Some sozinha depois de LICAO_MS.
+     * @param {!Object} p
+     */
+    function desenharLicao(p) {
+      var licao = estado.licao;
+      if (!licao || estado.tempoMs > licao.ate) return;
+
+      var restante = licao.ate - estado.tempoMs;
+      ctx.globalAlpha = Math.min(1, restante / 700);   // esmaece no fim
+
+      var margem = Math.min(40, largura * 0.06);
+      var larguraFaixa = largura - margem * 2;
+      var util = larguraFaixa - 28;
+
+      var fontePar = fonteQueCabe(licao.par, 20, util, true);
+      var linhas = licao.frase ? quebrarTexto(licao.frase, 14, util) : [];
+      var alturaFaixa = 28 + fontePar + linhas.length * 18;
+      var base = altura - ALTURA_CHAO - alturaFaixa - 12;
+
+      ctx.fillStyle = '#0b0f14d9';
+      ctx.fillRect(margem, base, larguraFaixa, alturaFaixa);
+      ctx.fillStyle = p.acento;
+      ctx.fillRect(margem, base, 4, alturaFaixa);
+
+      var centro = margem + larguraFaixa / 2;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#f5f8fb';
+      ctx.font = fonteDe(fontePar, true);
+      ctx.fillText(licao.par, centro, base + 14 + fontePar / 2);
+
+      ctx.fillStyle = '#c3ccd6';
+      ctx.font = fonteDe(14);
+      linhas.forEach(function (linha, i) {
+        ctx.fillText(linha, centro, base + 22 + fontePar + i * 18);
+      });
+
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+      ctx.globalAlpha = 1;
+    }
+
+    /** @param {!Object} p */
+    function desenharCeu(p) {
+      var g = ctx.createLinearGradient(0, 0, 0, altura);
+      g.addColorStop(0, p.ceu[0]);
+      g.addColorStop(1, p.ceu[1]);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, largura, altura);
+    }
+
+    /**
+     * Silhueta de morros em parallax.
+     * @param {!Object} p
+     * @param {number} fator Fracao da velocidade do mundo.
+     * @param {number} base Linha de base vertical.
+     * @param {number} amplitude
+     * @param {boolean=} frente
+     */
+    function desenharMorros(p, fator, base, amplitude, frente) {
+      var deslocamento = (estado.distanciaPx * fator) % 400;
+      ctx.fillStyle = frente ? p.morros[1] : p.morros[0];
+      ctx.beginPath();
+      ctx.moveTo(-40, altura);
+      for (var x = -40; x <= largura + 40; x += 20) {
+        var t = (x + deslocamento) / 200;
+        var y = base - Math.sin(t) * amplitude - Math.sin(t * 2.7) * (amplitude * 0.4);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(largura + 40, altura);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    /** @param {!Object} p */
+    function desenharChao(p) {
+      var y = altura - ALTURA_CHAO;
+      ctx.fillStyle = p.chao;
+      ctx.fillRect(0, y, largura, ALTURA_CHAO);
+      ctx.fillStyle = p.acento;
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(0, y, largura, 2);
+      ctx.globalAlpha = 1;
+
+      // Marcas de solo que se movem com o mundo, dando sensacao de velocidade.
+      ctx.fillStyle = '#0003';
+      var passo = 56;
+      var off = estado.distanciaPx % passo;
+      for (var x = -off; x < largura; x += passo) {
+        ctx.fillRect(x, y + 14, 24, 4);
+      }
+    }
+
+    /** @param {!Object} p */
+    function desenharObstaculos(p) {
+      estado.obstaculos.forEach(function (o) {
+        ctx.fillStyle = p.morros[1];
+        ctx.fillRect(o.x, o.y, o.w, o.h);
+        ctx.fillStyle = p.acento;
+        ctx.globalAlpha = 0.5;
+        ctx.fillRect(o.x, o.doTeto ? o.y + o.h - 3 : o.y, o.w, 3);
+        ctx.globalAlpha = 1;
+      });
+    }
+
+    function desenharMoedas() {
+      estado.moedasMundo.forEach(function (m) {
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+        ctx.fillStyle = '#f4c744';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, m.r * 0.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#0006';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      });
+    }
+
+    /** @param {!Object} p */
+    function desenharInimigos(p) {
+      estado.inimigos.forEach(function (i) {
+        ctx.save();
+        ctx.translate(i.x + i.w / 2, i.y);
+
+        if (i.tipo === 'balloon') {
+          ctx.fillStyle = '#e06a6a';
+          ctx.beginPath();
+          ctx.arc(0, 0, 13, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#0007';
+          ctx.beginPath();
+          ctx.moveTo(0, 13);
+          ctx.lineTo(0, 24);
+          ctx.stroke();
+        } else if (i.tipo === 'bird') {
+          ctx.fillStyle = '#2b2b33';
+          var bater = Math.sin(i.fase * 3) * 8;
+          ctx.beginPath();
+          ctx.moveTo(-15, bater);
+          ctx.lineTo(0, 0);
+          ctx.lineTo(15, bater);
+          ctx.lineTo(0, 6);
+          ctx.closePath();
+          ctx.fill();
+        } else if (i.tipo === 'lightning') {
+          ctx.fillStyle = '#ffe066';
+          ctx.beginPath();
+          ctx.moveTo(-8, -14);
+          ctx.lineTo(6, -3);
+          ctx.lineTo(-2, -1);
+          ctx.lineTo(9, 14);
+          ctx.lineTo(-5, 2);
+          ctx.lineTo(3, 0);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          ctx.fillStyle = '#4a5361';
+          ctx.fillRect(-14, -8, 28, 14);
+          ctx.fillStyle = '#ff6b6b';
+          ctx.fillRect(-4, -3, 8, 4);
+          ctx.strokeStyle = '#8d9bab';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(-14, -9);
+          ctx.lineTo(-20, -14);
+          ctx.moveTo(14, -9);
+          ctx.lineTo(20, -14);
+          ctx.stroke();
+        }
+        ctx.restore();
+      });
+    }
+
+    function desenharJogador() {
+      var piscando = estado.tempoMs < estado.invulneravelAte &&
+                     Math.floor(estado.tempoMs / 100) % 2 === 0;
+      if (piscando) return;
+
+      var x = jogadorX();
+      var y = estado.jogadorY;
+      var inclinacao = Math.max(-0.35, Math.min(0.35, estado.velocidadeY / 30));
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(inclinacao);
+
+      // Jato.
+      if (empuxoAtivo && estado.combustivel > 0) {
+        var tamanho = 12 + Math.random() * 10;
+        var g = ctx.createLinearGradient(0, 10, 0, 10 + tamanho);
+        g.addColorStop(0, '#ffe066');
+        g.addColorStop(1, '#ff6b3d00');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(-7, 12);
+        ctx.lineTo(7, 12);
+        ctx.lineTo(0, 12 + tamanho);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.fillStyle = '#33404f';                       // mochila
+      ctx.fillRect(-13, -10, 8, 22);
+      ctx.fillStyle = '#e8eef5';                       // corpo
+      ctx.fillRect(-6, -12, 13, 24);
+      ctx.fillStyle = '#f4c744';                       // faixa
+      ctx.fillRect(-6, -4, 13, 5);
+      ctx.fillStyle = '#f0c8a0';                       // cabeca
+      ctx.beginPath();
+      ctx.arc(2, -17, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#1f9d55';                       // capacete
+      ctx.beginPath();
+      ctx.arc(2, -18, 7.5, Math.PI, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    // --- Leitura de estado para o HUD ----------------------------------------
+
+    /** @return {?Object} */
+    function snapshot() {
+      if (!estado) return null;
+      return {
+        pontos: estado.pontos,
+        metros: estado.metros,
+        moedas: estado.moedas,
+        vidas: Math.max(0, estado.vidas),
+        combustivel: estado.combustivel / dados.player.MAX_FUEL,
+        alvoMetros: cfg ? cfg.level.lengthMeters : 0
+      };
+    }
+
+    return {
+      init: init,
+      start: start,
+      stop: stop,
+      pause: pause,
+      resume: resume,
+      isRunning: isRunning,
+      snapshot: snapshot
+    };
+  })();
+</script>

@@ -1,0 +1,128 @@
+<!--
+  HealthCheck.html
+  codex-frontend-backend-healthcheck
+
+  Selo que torna visivel se o frontend esta mesmo falando com o backend.
+
+  Aditivo e isolado de proposito:
+   - cria o proprio elemento, nao depende de container nenhum do app;
+   - chama o metodo top-level ping() (Ping.gs), que nao toca planilha;
+   - degrada em silencio: pointer-events:none, nunca bloqueia a interface.
+-->
+<style id="codex-backend-status-estilo">
+  #codex-backend-status {
+    position: fixed;
+    bottom: 10px;
+    left: 10px;
+    z-index: 2147483000;
+    font: 12px/1.4 system-ui, Segoe UI, Roboto, sans-serif;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #6b7280;
+    color: #fff;
+    opacity: 0.85;
+    pointer-events: none;
+    user-select: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  }
+
+  /* O selo e fixo no canto inferior esquerdo. Em 360px (Samsung S20, a tela de
+     referencia da frota) a faixa com texto cobria o conteudo — na tela de login
+     ficava exatamente sobre o link de recuperar senha. No celular ele vira um
+     ponto colorido: mesma informacao, sem tapar linha nenhuma. O texto continua
+     no DOM para o leitor de tela e no title para quem passa o dedo. */
+  @media (max-width: 480px) {
+    #codex-backend-status {
+      width: 14px;
+      height: 14px;
+      padding: 0 !important;
+      overflow: hidden;
+      text-indent: -999px;
+      bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    }
+  }
+</style>
+<script>
+(function () {
+  var INTERVALO_MS = 30000;
+  var timer = null;
+  var sequencia = 0;
+
+  function mount() {
+    if (document.getElementById('codex-backend-status')) {
+      return document.getElementById('codex-backend-status');
+    }
+    var el = document.createElement('div');
+    el.id = 'codex-backend-status';
+    el.className = 'codex-backend-status';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.setAttribute('aria-atomic', 'true');
+    el.setAttribute('title', 'Estado da conexão com o jogo');
+    el.style.cssText = [
+      'position:fixed', 'bottom:10px', 'left:10px', 'z-index:2147483000',
+      'font:12px/1.4 system-ui,Segoe UI,Roboto,sans-serif',
+      'padding:4px 10px', 'border-radius:999px',
+      'background:#6b7280', 'color:#fff', 'opacity:0.85',
+      'pointer-events:none', 'user-select:none',
+      'box-shadow:0 1px 3px rgba(0,0,0,.25)'
+    ].join(';');
+    el.textContent = 'Conectando…';
+    (document.body || document.documentElement).appendChild(el);
+    return el;
+  }
+  function set(el, color, text, title) {
+    if (!el) return;
+    el.style.background = color;
+    el.textContent = text;
+    el.setAttribute('title', title || text);
+    el.dataset.state = text;
+  }
+  function ok(el) {
+    set(el, '#16a34a', 'Conexão ativa', 'Servidor disponível agora');
+  }
+  function down(el, text) {
+    set(el, '#dc2626', text || 'Servidor indisponível',
+        'Não foi possível responder ao servidor');
+  }
+  function offline(el) {
+    set(el, '#b45309', 'Sem internet',
+        'Aguardando a conexão com a internet');
+  }
+  function check(el) {
+    if (navigator.onLine === false) {
+      offline(el);
+      return;
+    }
+    if (!window.google || !google.script || !google.script.run) {
+      set(el, '#b45309', 'Conectando…', 'Conectando ao servidor');
+      return;
+    }
+    var atual = ++sequencia;
+    set(el, '#b45309', 'Verificando…', 'Verificando o servidor');
+    google.script.run
+      .withSuccessHandler(function () { if (atual === sequencia) ok(el); })
+      .withFailureHandler(function () { if (atual === sequencia) down(el); })
+      .ping();
+  }
+  function agendar(el) {
+    if (timer) clearInterval(timer);
+    timer = setInterval(function () {
+      if (!document.hidden) check(el);
+    }, INTERVALO_MS);
+  }
+  function init() {
+    var el = mount();
+    check(el);
+    agendar(el);
+    window.addEventListener('online', function () { check(el); });
+    window.addEventListener('offline', function () { ++sequencia; offline(el); });
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) check(el);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else { init(); }
+})();
+</script>

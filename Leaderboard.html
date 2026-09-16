@@ -1,0 +1,60 @@
+<!-- Leaderboard.html - painel formativo da turma. -->
+<section id="screen-leaderboard" class="screen" aria-labelledby="rankingTitle"
+         aria-busy="false">
+  <div>
+    <header class="cabecalho-tela">
+      <p class="sobretitulo">Tentativas da turma</p>
+      <h2 class="titulo titulo-tela" id="rankingTitle">Painel de percursos</h2>
+      <p class="subtitulo" id="rankingDescricao">
+        Compare percursos, não pessoas. Os pontos não medem inteligência e não valem nota.
+      </p>
+    </header>
+
+    <p class="estado-lista" id="rankingResumo" role="status" aria-live="polite" aria-atomic="true">
+      Carregando o painel…
+    </p>
+
+    <div class="filtro-ranking">
+      <label for="rankingNivel">Destino</label>
+      <select id="rankingNivel">
+        <option value="">Todos os níveis</option>
+      </select>
+      <label for="rankingLimite">Exibir</label>
+      <select id="rankingLimite">
+        <option value="10">Top 10</option>
+        <option value="20" selected>Top 20</option>
+        <option value="50">Top 50</option>
+      </select>
+      <button class="secundario compacto" id="btnAtualizarRanking" type="button">
+        Atualizar
+      </button>
+    </div>
+
+    <!-- Vizinhanca antes do podio: e a comparacao que o jogador consegue usar. -->
+    <div id="rankingVizinhanca" role="region" aria-label="Percursos próximos ao seu"
+         aria-live="polite"></div>
+
+    <div class="podio" id="rankingPodio" aria-label="Pódio" hidden></div>
+
+    <div class="tabela-scroll">
+      <table class="tabela" id="tabelaRanking" hidden>
+        <caption class="sr-only">Percursos registrados no jogo</caption>
+        <thead>
+          <tr>
+            <th class="num" scope="col">Posição</th>
+            <th scope="col">Identificador protegido</th>
+            <th class="num" scope="col">Nível</th>
+            <th class="num" scope="col">Pontos</th>
+          </tr>
+        </thead>
+        <tbody id="corpoRanking"></tbody>
+      </table>
+    </div>
+    <p class="vazio" id="rankingVazio" role="status" hidden>
+      Ainda não há percurso neste recorte.
+    </p>
+    <p class="atualizado-em" id="rankingAtualizado" role="status" aria-live="polite"></p>
+
+    <button class="secundario" id="btnVoltarRanking" type="button">Voltar</button>
+  </div>
+</section>

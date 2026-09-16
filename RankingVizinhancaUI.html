@@ -1,0 +1,136 @@
+<!--
+  RankingVizinhanca.html — partial canonico da frota (codex-ranking-vizinhanca)
+
+  Renderiza a janela devolvida por rankingVizinhanca(): ate 2 colegas acima
+  (pontuacao maior ou igual), o proprio jogador em destaque e ate 2 abaixo
+  (pontuacao menor ou igual).
+
+  Uso:
+    RankingVizinhanca.render(elemento, resposta);
+  onde `resposta` e { posicao, total, linhas }.
+
+  Autocontido: cria o proprio CSS e nao depende de framework. O escape e o
+  canonico da frota (5 caracteres, seguro para atributo).
+-->
+<style id="codex-ranking-vizinhanca-estilo">
+  .rv-bloco { margin: 16px 0; }
+  .rv-titulo {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; margin-bottom: 8px;
+  }
+  .rv-titulo strong { font-size: 0.95rem; }
+  .rv-titulo small { opacity: 0.75; font-size: 0.75rem; }
+  .rv-lista { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .rv-linha {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid currentColor;
+    border-color: rgba(127, 127, 127, 0.28);
+    border-radius: 8px;
+    min-height: 44px;
+  }
+  .rv-linha[data-relacao="alvo"] {
+    border-width: 2px;
+    border-color: currentColor;
+    font-weight: 700;
+  }
+  .rv-pos { opacity: 0.7; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+  .rv-nome { overflow-wrap: anywhere; }
+  .rv-pts { font-variant-numeric: tabular-nums; font-weight: 700; }
+  .rv-vazio { padding: 12px; opacity: 0.75; font-size: 0.9rem; }
+  /* Samsung S20 (360px) e o piso de referencia: a linha nao pode quebrar. */
+  @media (max-width: 380px) {
+    .rv-linha { grid-template-columns: 2rem 1fr auto; gap: 8px; padding: 9px 10px; }
+    .rv-titulo { flex-wrap: wrap; }
+  }
+</style>
+<script id="codex-ranking-vizinhanca-script">
+(function () {
+  'use strict';
+  if (window.RankingVizinhanca) return;
+
+  function escapar(valor) {
+    return (valor == null ? '' : String(valor))
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function rotulo(relacao) {
+    if (relacao === 'alvo') return 'Você';
+    if (relacao === 'acima') return 'Outro percurso da turma';
+    return 'Outro percurso da turma';
+  }
+
+  function render(destino, resposta) {
+    var elemento = typeof destino === 'string' ? document.getElementById(destino) : destino;
+    if (!elemento) return;
+
+    var dados = resposta || {};
+    var linhas = dados.linhas || [];
+    var bloco = document.createElement('div');
+    bloco.className = 'rv-bloco';
+    if (!linhas.length) {
+      var vazio = document.createElement('p');
+      vazio.className = 'rv-vazio';
+      vazio.textContent = 'Ainda não há percursos registrados neste painel.';
+      bloco.appendChild(vazio);
+      elemento.replaceChildren(bloco);
+      return;
+    }
+
+    var titulo = document.createElement('div');
+    titulo.className = 'rv-titulo';
+    var forte = document.createElement('strong');
+    forte.textContent = dados.posicao ? 'Percursos próximos ao seu' : 'Percursos da turma';
+    var pequeno = document.createElement('small');
+    pequeno.textContent = dados.posicao
+      ? 'registro ' + String(dados.posicao) + ' de ' + String(dados.total)
+      : 'você ainda não registrou um voo';
+    titulo.appendChild(forte);
+    titulo.appendChild(pequeno);
+    bloco.appendChild(titulo);
+
+    var lista = document.createElement('ul');
+    lista.className = 'rv-lista';
+    linhas.forEach(function (linha) {
+      var item = document.createElement('li');
+      item.className = 'rv-linha';
+      item.dataset.relacao = linha.relacao == null ? '' : String(linha.relacao);
+      item.title = rotulo(linha.relacao);
+
+      var posicao = document.createElement('span');
+      posicao.className = 'rv-pos';
+      posicao.textContent = String(linha.posicao == null ? '' : linha.posicao) + 'º';
+
+      var nome = document.createElement('span');
+      nome.className = 'rv-nome';
+      nome.textContent = linha.destaque ? 'Você ' : 'Viajante ' + String(linha.posicao);
+      if (linha.destaque) {
+        var destaque = document.createElement('span');
+        destaque.setAttribute('aria-label', 'você');
+        destaque.textContent = '(você)';
+        nome.appendChild(destaque);
+      }
+
+      var pontos = document.createElement('span');
+      pontos.className = 'rv-pts';
+      pontos.textContent = String(linha.pontuacao == null ? '' : linha.pontuacao);
+
+      item.appendChild(posicao);
+      item.appendChild(nome);
+      item.appendChild(pontos);
+      lista.appendChild(item);
+    });
+    bloco.appendChild(lista);
+    elemento.replaceChildren(bloco);
+  }
+
+  window.RankingVizinhanca = { render: render, escapar: escapar };
+}());
+</script>

@@ -1,0 +1,23 @@
+<!-- LoadingScreen.html - inicialização e recuperação de falha de conexão. -->
+<section id="screen-loading" class="screen active"
+         aria-labelledby="loadingTitle" aria-describedby="loadingText">
+  <div class="carregando" role="status" aria-live="polite" aria-busy="true"
+       id="loadingStatus">
+    <div class="marca-app" aria-hidden="true">SE</div>
+    <h1 class="titulo" id="loadingTitle">Sobre Encantos</h1>
+    <p class="status-conexao" id="loadingNetwork">
+      <span aria-hidden="true"></span> Conexão disponível
+    </p>
+    <div class="roda" aria-hidden="true"></div>
+    <p class="subtitulo" id="loadingText">Carregando...</p>
+    <p class="dica-carregamento" id="loadingHint">
+      Preparando sua jornada pelas paisagens do Brasil.
+    </p>
+    <p class="detalhe-carregamento" id="loadingDetail">
+      Seus níveis e preferências serão sincronizados.
+    </p>
+    <button class="secundario" id="btnTentarNovamente" type="button" hidden>
+      Tentar novamente
+    </button>
+  </div>
+</section>

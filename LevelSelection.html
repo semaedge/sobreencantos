@@ -1,0 +1,49 @@
+<!--
+  LevelSelection.html
+  Lista de níveis. O bloqueio vem de api_getLevelSelection: o backend é quem
+  decide o que está liberado, o cliente só desenha.
+-->
+<section id="screen-levels" class="screen" aria-labelledby="levelsTitle">
+  <div>
+    <header class="cabecalho-tela">
+      <p class="sobretitulo">Mapa da jornada</p>
+      <h2 class="titulo titulo-tela" id="levelsTitle">Escolha o destino</h2>
+      <p class="subtitulo">
+        Dez capitais e desafios para ligar uma ação ao que ela pode causar.
+      </p>
+    </header>
+
+    <div class="resumo-progresso" aria-live="polite">
+      <span id="levelsLiberados">— destinos liberados</span>
+      <span id="levelsConcluidos">— concluídos</span>
+    </div>
+    <p class="legenda-niveis">
+      <span><i class="legenda-status disponivel"></i> Disponível</span>
+      <span><i class="legenda-status concluido"></i> Concluído</span>
+      <span><i class="legenda-status bloqueado"></i> Bloqueado</span>
+    </p>
+
+    <div class="filtro-niveis">
+      <label for="levelsFiltro">Mostrar</label>
+      <select id="levelsFiltro">
+        <option value="all">Todos os destinos</option>
+        <option value="available">Disponíveis</option>
+        <option value="completed">Concluídos</option>
+        <option value="locked">Bloqueados</option>
+      </select>
+      <span id="levelsVisiveis" aria-live="polite"></span>
+    </div>
+
+    <p class="estado-lista" id="levelsStatus" role="status" aria-live="polite">
+      Carregando níveis...
+    </p>
+    <div class="lista" id="listaNiveis" aria-label="Destinos da jornada"></div>
+    <p class="vazio" id="levelsVazio" role="status" hidden>
+      Nenhum destino corresponde a este filtro.
+    </p>
+    <button class="secundario compacto" id="btnAtualizarNiveis" type="button" hidden>
+      Atualizar destinos
+    </button>
+    <button class="secundario" id="btnVoltarNiveis" type="button">Voltar</button>
+  </div>
+</section>

@@ -1,0 +1,479 @@
+<!-- MainMenu.html - menu principal. -->
+<section id="screen-menu" class="screen" aria-labelledby="menuTitle">
+  <div>
+    <header class="cabecalho-tela">
+      <p class="sobretitulo">Sua jornada</p>
+      <h1 class="titulo" id="menuTitle">Sobre Encantos</h1>
+      <p class="subtitulo" id="menuSaudacao" aria-live="polite"></p>
+    </header>
+
+    <div class="detalhes" aria-label="Resumo do jogador">
+      <div><b id="menuRecorde">0</b><span>Melhor voo</span></div>
+      <div><b id="menuMoedas">0</b><span>Pistas</span></div>
+      <div><b id="menuDistancia">0 m</b><span>Distância</span></div>
+    </div>
+
+    <div class="destino-atual" aria-labelledby="menuDestinoRotulo">
+      <div class="linha-destino">
+        <span id="menuDestinoRotulo">Próximo destino</span>
+        <span class="selo-dificuldade" id="menuDificuldade">Normal</span>
+      </div>
+      <strong id="menuDestino">Preparando rota...</strong>
+      <small id="menuAtracao"></small>
+      <div class="barra-progresso" id="menuProgressoTrilha" role="progressbar"
+           aria-label="Progresso da jornada" aria-valuemin="0" aria-valuemax="10"
+           aria-valuenow="0">
+        <span id="menuProgressoBarra"></span>
+      </div>
+      <small id="menuProgresso">Carregando progresso...</small>
+    </div>
+
+    <details class="recursos-jornada" id="menuRecursos">
+      <summary>
+        <span>Conquistas e itens</span>
+        <small id="menuRecursosResumo" aria-live="polite">Carregando…</small>
+      </summary>
+      <div class="recursos-conteudo">
+        <div class="secao-conquistas" aria-labelledby="menuConquistasTitulo">
+          <h2 id="menuConquistasTitulo">Conquistas</h2>
+          <ul id="menuConquistas" class="recursos-lista" aria-live="polite"></ul>
+        </div>
+        <div class="secao-inventario" aria-labelledby="menuInventarioTitulo">
+          <h2 id="menuInventarioTitulo">Itens disponíveis</h2>
+          <ul id="menuInventario" class="recursos-lista" aria-live="polite"></ul>
+        </div>
+      </div>
+    </details>
+
+    <nav class="acoes-menu" aria-label="Ações principais">
+      <button id="btnJogar" type="button" aria-describedby="menuJogarAjuda">Continuar jornada</button>
+      <small class="acao-ajuda" id="menuJogarAjuda">Retoma o próximo destino da sua rota.</small>
+      <div class="acoes-menu-secundarias">
+        <button class="secundario" id="btnNiveis" type="button">Escolher nível</button>
+        <button class="secundario" id="btnRanking" type="button">Painel da turma</button>
+        <button class="secundario" id="btnConfig" type="button">Configurações</button>
+      </div>
+    </nav>
+    <button class="fantasma" id="btnSair" type="button">Sair da conta</button>
+    <p class="aviso" id="menuAviso" role="status" aria-live="polite"></p>
+  </div>
+</section>
+
+<!-- ── Painel de Experiência: 3 Fases ───────────────────────────────────── -->
+<section class="exp-panel" id="se-experience-panel" aria-labelledby="se-exp-title" hidden>
+  <style>
+    .exp-panel{margin:18px 0;padding:22px;border:2px solid #6e40c9;border-radius:14px;background:#f8f5ff}
+    .exp-panel .ep-meta{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+    .exp-panel .ep-badge{display:inline-flex;align-items:center;padding:4px 11px;border-radius:20px;font:700 11px system-ui;text-transform:uppercase;letter-spacing:.04em}
+    .ep-badge[data-phase="1"]{background:#ede7ff;color:#4a148c}
+    .ep-badge[data-phase="2"]{background:#fff3cd;color:#7c5100}
+    .ep-badge[data-phase="3"]{background:#fde8e8;color:#9b1c1c}
+    .exp-panel .ep-counter{font-size:12px;color:#666;font-weight:600}
+    .exp-panel h2{margin:0 0 6px;font-size:18px;color:#2d1b69}
+    .exp-panel .ep-situation{margin:0;font-size:14px;line-height:1.6;color:#333}
+    .exp-panel .ep-constraint{margin-top:9px;padding:8px 12px;border-left:3px solid #d97706;border-radius:4px;background:#fffbeb;color:#7c5100;font-size:13px;font-weight:600}
+    .exp-panel .ep-bars{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0;padding:14px;border-radius:8px;background:#fff;border:1px solid #e0d6ff}
+    .exp-panel .ep-meter{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;gap:3px 6px}
+    .exp-panel .ep-meter-label{font-size:11px;color:#888;font-weight:700;grid-column:1}
+    .exp-panel .ep-meter-val{font:800 15px sans-serif;grid-row:2;grid-column:2;text-align:right}
+    .exp-panel .ep-track{grid-column:1;grid-row:2;height:7px;border-radius:4px;background:#eee;overflow:hidden}
+    .exp-panel .ep-fill{height:100%;border-radius:4px;transition:width .4s ease}
+    .ep-fill-k{background:#6e40c9}.ep-fill-c{background:#1565c0}.ep-fill-p{background:#c62828}
+    .exp-panel .ep-stage{margin-top:14px}
+    .exp-panel .ep-stage-label{display:block;font-weight:700;font-size:13px;margin-bottom:7px;color:#2d1b69}
+    .exp-panel .ep-hint{font-size:12px;color:#888;margin:0 0 7px}
+    .exp-panel .ep-decisions{display:grid;gap:9px}
+    .exp-panel .ep-dec-btn{width:100%;padding:12px 15px;border:2px solid #c5aef0;border-radius:9px;background:#fff;color:#2d1b69;font:600 13px system-ui;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+    .exp-panel .ep-dec-btn:hover{border-color:#6e40c9;background:#f0eaff}
+    .exp-panel .ep-consequence{padding:11px 14px;border-radius:7px;background:#ede7ff;border-left:3px solid #6e40c9;margin-bottom:12px;font-size:13px;color:#2d1b69}
+    .exp-panel textarea{width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #d0c4f0;border-radius:7px;font:14px system-ui;resize:vertical;margin-bottom:9px}
+    .exp-panel .ep-endgame{text-align:center;padding:24px 16px}
+    .exp-panel .ep-endgame-emoji{display:block;font-size:44px;margin-bottom:10px}
+    .exp-panel .ep-endgame h3{margin:0 0 10px;font-size:20px;color:#2d1b69}
+    .exp-panel .ep-endgame p{max-width:520px;margin:0 auto 8px;font-size:14px;line-height:1.6}
+    @media(max-width:600px){.exp-panel .ep-bars{grid-template-columns:1fr}}
+  </style>
+
+  <header class="ep-header">
+    <div class="ep-meta">
+      <span id="se-ep-badge" class="ep-badge" data-phase="1">Fase 1 · Exploração</span>
+      <span id="se-ep-counter" class="ep-counter">Capítulo 1 / 6</span>
+    </div>
+    <h2 id="se-exp-title">—</h2>
+    <p id="se-ep-situation" class="ep-situation"></p>
+    <div id="se-ep-constraint" class="ep-constraint" hidden></div>
+  </header>
+
+  <div class="ep-bars" aria-label="Estado atual do grupo">
+    <div class="ep-meter"><span class="ep-meter-label">Conhecimento</span><div class="ep-track"><div id="se-bar-k" class="ep-fill ep-fill-k" style="width:50%"></div></div><span id="se-val-k" class="ep-meter-val">5</span></div>
+    <div class="ep-meter"><span class="ep-meter-label">Cooperação</span><div class="ep-track"><div id="se-bar-c" class="ep-fill ep-fill-c" style="width:50%"></div></div><span id="se-val-c" class="ep-meter-val">5</span></div>
+    <div class="ep-meter"><span class="ep-meter-label">Pressão</span><div class="ep-track"><div id="se-bar-p" class="ep-fill ep-fill-p" style="width:20%"></div></div><span id="se-val-p" class="ep-meter-val">2</span></div>
+  </div>
+
+  <div id="se-stage-briefing" class="ep-stage">
+    <p class="ep-stage-label">📖 Leia a situação e prepare sua previsão.</p>
+    <button class="btn" type="button" id="se-btn-start-prediction">Fazer previsão →</button>
+  </div>
+
+  <div id="se-stage-prediction" class="ep-stage" hidden>
+    <label for="se-prediction-text" class="ep-stage-label">🔮 Previsão</label>
+    <p id="se-prediction-prompt" class="ep-hint"></p>
+    <textarea id="se-prediction-text" rows="3" maxlength="420" placeholder="O que você prevê que vai acontecer durante o voo após a decisão do grupo?"></textarea>
+    <button class="btn" type="button" id="se-btn-send-prediction">Registrar previsão →</button>
+  </div>
+
+  <div id="se-stage-decision" class="ep-stage" hidden>
+    <p class="ep-stage-label">⚖️ Decisão do grupo</p>
+    <div id="se-decisions" class="ep-decisions" role="group" aria-label="Opções de decisão"></div>
+  </div>
+
+  <div id="se-stage-observation" class="ep-stage" hidden>
+    <div id="se-consequence" class="ep-consequence"></div>
+    <label for="se-observation-text" class="ep-stage-label">👁️ Observação</label>
+    <p class="ep-hint">O que mudou depois da escolha? Use um dado, sinal ou acontecimento do jogo.</p>
+    <textarea id="se-observation-text" rows="3" maxlength="420" placeholder="Registre o que você observou após a decisão…"></textarea>
+    <button class="btn" type="button" id="se-btn-send-observation">Registrar observação →</button>
+  </div>
+
+  <div id="se-stage-reflection" class="ep-stage" hidden>
+    <label for="se-reflection-text" class="ep-stage-label">🔄 Reflexão</label>
+    <p id="se-reflection-prompt" class="ep-hint">O que o grupo manteria ou mudaria na próxima rodada?</p>
+    <textarea id="se-reflection-text" rows="3" maxlength="420" placeholder="Registre sua reflexão…"></textarea>
+    <button class="btn" type="button" id="se-btn-send-reflection">Avançar →</button>
+  </div>
+
+  <div id="se-stage-complete" class="ep-stage ep-endgame" hidden>
+    <span id="se-endgame-emoji" class="ep-endgame-emoji">🗺️</span>
+    <h3 id="se-endgame-title">Desfecho</h3>
+    <p id="se-endgame-summary"></p>
+    <p id="se-endgame-recommendation" class="ep-hint"></p>
+    <button class="btn secundario" type="button" id="se-btn-restart">Jogar novamente</button>
+  </div>
+</section>
+
+<script>
+(function () {
+  var SE_Exp = {
+    workflow: null,
+    schoolYear: 3,
+    bound: false,
+
+    init: function () {
+      var panel = document.getElementById('se-experience-panel');
+      if (!panel) return;
+      if (window.SobreEncantosBackend && !window.SobreEncantosBackend.pronto()) {
+        panel.hidden = true;
+        this.workflow = null;
+        return;
+      }
+      panel.hidden = false;
+      if (!this.bound) {
+        this._bind();
+        this.bound = true;
+      }
+      this._startExperience(function (r) { SE_Exp._handleResponse(r); }, function (error) {
+        panel.hidden = true;
+        SE_Exp._showMessage(error && error.message ? error.message : 'A experiência está temporariamente indisponível.');
+      });
+    },
+
+    reset: function () {
+      var panel = document.getElementById('se-experience-panel');
+      this.workflow = null;
+      if (panel) panel.hidden = true;
+    },
+
+    _offlineWorkflow: function () {
+      return { data: { stage: 'briefing', chapterId: 'observar',
+        briefing: { title: 'Cartas do vento', situation: 'Durante o voo, paisagens e palavras revelam pistas.',
+          phase: 1, phaseLabel: 'Exploração', constraint: null, totalChapters: 6,
+          decisions: [{ id: 'coletar', label: 'Coletar pistas da paisagem e registrar notas de campo' }, { id: 'acelerar', label: 'Priorizar velocidade de voo e ignorar pistas' }],
+          cycle: { prediction: 'Registre sua previsão e a evidência que pretende observar.', revision: 'O que o grupo manteria ou mudaria?' } },
+        state: { chapter: 1, knowledge: 5, cooperation: 5, pressure: 2 }, complete: false } };
+    },
+
+    _startExperience: function (onSuccess, onFailure) {
+      var backend = window.SobreEncantosBackend;
+      if (backend && backend.pronto()) {
+        backend.carregarExperiencia(SE_Exp.schoolYear).then(onSuccess).catch(onFailure);
+        return;
+      }
+      // O preview local pode expor o diretor sem autenticação; esse caminho
+      // nunca é usado depois que JavaScript.html instala a ponte de sessão.
+      if (typeof window.getExperienceBasicWorkflow === 'function') {
+        try { onSuccess(window.getExperienceBasicWorkflow(SE_Exp.schoolYear)); } catch (error) { onFailure(error); }
+        return;
+      }
+      onSuccess(this._offlineWorkflow());
+    },
+
+    _handleResponse: function (r) {
+      if (r && r.success === false) {
+        this._showMessage(r.error || 'Revise os dados antes de avançar.');
+        return false;
+      }
+      if (r && r.needsReview) {
+        this._showMessage(r.message || 'Revise antes de avançar.');
+        return false;
+      }
+      this._clearMessage();
+      this._render(r && r.data ? r : { data: r });
+      return true;
+    },
+
+    _showMessage: function (message) {
+      var aviso = document.getElementById('menuAviso');
+      var text = message && message.message ? message.message : message;
+      if (aviso) aviso.textContent = String(text || 'Não foi possível avançar.');
+    },
+
+    _clearMessage: function () {
+      var aviso = document.getElementById('menuAviso');
+      if (aviso) aviso.textContent = '';
+    },
+
+    _bind: function () {
+      var self = this;
+      function on(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }
+      on('se-btn-start-prediction', function () { self._advance({}); });
+      on('se-btn-send-prediction',  function () { self._advance({ text: (document.getElementById('se-prediction-text') || {}).value }); });
+      on('se-btn-send-observation', function () { self._advance({ text: (document.getElementById('se-observation-text') || {}).value }); });
+      on('se-btn-send-reflection',  function () { self._advance({ text: (document.getElementById('se-reflection-text') || {}).value }); });
+      on('se-btn-restart', function () {
+        self._startExperience(function (r) { SE_Exp._handleResponse(r); }, function (error) {
+          self._showMessage(error && error.message ? error.message : 'Não foi possível reiniciar.');
+        });
+      });
+    },
+
+    _advance: function (payload) {
+      var self = this;
+      if (!this.workflow) return;
+      var current = this.workflow.data || this.workflow;
+      var backend = window.SobreEncantosBackend;
+
+      // Decisões alteram o estado persistido. O cliente envia apenas a escolha
+      // e usa o próximo estado calculado pelo servidor para desenhar a fase.
+      if (backend && backend.pronto() && current.stage === 'decision') {
+        backend.registrarDecisao(current.state, current.chapterId,
+            payload.decisionId, payload.evidence).then(function (result) {
+          if (!result || result.success === false) {
+            self._handleResponse({ success: false,
+              error: (result && result.error) || 'Não foi possível registrar a escolha.',
+              data: current });
+            return;
+          }
+          var next = Object.assign({}, current, {
+            state: result.nextState || current.state,
+            lastResult: result,
+            stage: 'observation'
+          });
+          self._handleResponse({ success: true, data: next });
+        }).catch(function (error) {
+          self._showMessage(error && error.message ? error.message : 'Erro ao registrar a escolha.');
+        });
+        return;
+      }
+
+      if (backend && backend.pronto()) {
+        this._advanceLocal(current, payload);
+        return;
+      }
+
+      if (typeof window.advanceExperienceBasicWorkflow === 'function') {
+        try { self._handleResponse(window.advanceExperienceBasicWorkflow(self.workflow, payload, self.schoolYear)); }
+        catch (error) { self._showMessage(error && error.message ? error.message : 'Erro ao avançar.'); }
+        return;
+      }
+      self._showMessage('A experiência está indisponível neste modo de pré-visualização.');
+    },
+
+    _advanceLocal: function (current, payload) {
+      var self = this;
+      var next = Object.assign({}, current);
+      var stage = current.stage || 'briefing';
+      var text = String((payload && payload.text) || '').trim().substring(0, 420);
+
+      if (stage === 'briefing') {
+        next.stage = 'prediction';
+        self._handleResponse({ success: true, data: next });
+        return;
+      }
+      if (stage === 'prediction') {
+        if (!text) {
+          self._handleResponse({ success: false, error: 'Registre uma previsão antes de decidir.', data: current });
+          return;
+        }
+        next.prediction = text;
+        next.stage = 'decision';
+        self._handleResponse({ success: true, data: next });
+        return;
+      }
+      if (stage === 'observation') {
+        if (!text) {
+          self._handleResponse({ success: false, error: 'Registre uma evidência observada.', data: current });
+          return;
+        }
+        next.observation = text;
+        next.stage = 'reflection';
+        self._handleResponse({ success: true, data: next });
+        return;
+      }
+      if (stage !== 'reflection') return;
+      if (!text) {
+        self._handleResponse({ success: false, error: 'Registre o que manter ou revisar.', data: current });
+        return;
+      }
+      next.reflection = text;
+
+      var total = Number((current.briefing || {}).totalChapters || 6);
+      var chapter = Number((current.state || {}).chapter || 1);
+      if (chapter >= total) {
+        self._showMessage('Calculando o desfecho…');
+        window.SobreEncantosBackend.carregarDesfecho().then(function (endgame) {
+          next.complete = true;
+          next.stage = 'complete';
+          next.endgame = endgame;
+          self._handleResponse({ success: true, data: next });
+        }).catch(function (error) {
+          self._showMessage(error && error.message ? error.message : 'Não foi possível calcular o desfecho.');
+        });
+        return;
+      }
+
+      // A decisão já foi persistida. Recarregar o workflow faz a próxima fase
+      // refletir exatamente o capítulo atual guardado pelo backend.
+      window.SobreEncantosBackend.carregarExperiencia(this.schoolYear)
+        .then(function (workflow) { self._handleResponse(workflow); })
+        .catch(function (error) {
+          self._showMessage(error && error.message ? error.message : 'Não foi possível abrir o próximo capítulo.');
+        });
+    },
+
+    _render: function (resp) {
+      var d = (resp && resp.data) ? resp.data : resp;
+      if (!d) return;
+      this.workflow = resp;
+      var b     = d.briefing || {};
+      var state = d.state   || {};
+      var stage = d.stage   || 'briefing';
+      var phaseLabels = { 1: 'Exploração', 2: 'Tensão', 3: 'Crise' };
+
+      this._txt('se-exp-title', b.title || '');
+      this._txt('se-ep-situation', b.situation || '');
+
+      var badge = document.getElementById('se-ep-badge');
+      if (badge) { badge.textContent = 'Fase ' + (b.phase || 1) + ' · ' + (phaseLabels[b.phase] || b.phaseLabel || 'Exploração'); badge.dataset.phase = b.phase || 1; }
+
+      var order = (d.state && d.state.chapter) ? d.state.chapter : 1;
+      this._txt('se-ep-counter', 'Capítulo ' + order + ' / ' + (b.totalChapters || 6));
+
+      var constraint = document.getElementById('se-ep-constraint');
+      if (constraint) { if (b.constraint) { constraint.textContent = '⚠ ' + b.constraint; constraint.hidden = false; } else { constraint.hidden = true; } }
+
+      this._bar('k', state.knowledge   === undefined || state.knowledge === null ? 5 : state.knowledge);
+      this._bar('c', state.cooperation === undefined || state.cooperation === null ? 5 : state.cooperation);
+      this._bar('p', state.pressure    === undefined || state.pressure === null ? 2 : state.pressure);
+
+      var stages = ['briefing','prediction','decision','observation','reflection','complete'];
+      stages.forEach(function (s) {
+        var el = document.getElementById('se-stage-' + s);
+        if (el) el.hidden = (s !== stage);
+      });
+
+      if (stage === 'decision' && b.decisions) { this._renderDecisions(b.decisions, d.chapterId); }
+      if (stage === 'observation' && d.lastResult) {
+        this._txt('se-consequence', d.lastResult.consequence || '');
+      }
+      if (stage === 'prediction') {
+        this._txt('se-prediction-prompt', (b.cycle && b.cycle.prediction) || '');
+        var ptxt = document.getElementById('se-prediction-text'); if (ptxt) ptxt.value = d.prediction || '';
+      }
+      if (stage === 'reflection') {
+        this._txt('se-reflection-prompt', (b.cycle && b.cycle.revision) || '');
+        var rtxt = document.getElementById('se-reflection-text'); if (rtxt) rtxt.value = d.reflection || '';
+      }
+      if (stage === 'complete' && d.endgame) {
+        var eg = d.endgame;
+        var emoji = { equilibrado: '🗺️', fragmentado: '🌿', sobrecarga: '⚠️' };
+        this._txt('se-endgame-emoji', emoji[eg.route] || '🗺️');
+        this._txt('se-endgame-title', eg.title || 'Desfecho');
+        this._txt('se-endgame-summary', eg.summary || '');
+        this._txt('se-endgame-recommendation', eg.recommendation || '');
+      }
+    },
+
+    _renderDecisions: function (decisions, chapterId) {
+      var container = document.getElementById('se-decisions');
+      if (!container) return;
+      container.innerHTML = '';
+      decisions.forEach(function (dec) {
+        var btn = document.createElement('button');
+        btn.className = 'ep-dec-btn';
+        btn.type = 'button';
+        btn.textContent = dec.label;
+        btn.addEventListener('click', function () { SE_Exp._advance({ decisionId: dec.id }); });
+        container.appendChild(btn);
+      });
+    },
+
+    _bar: function (key, value) {
+      var bar = document.getElementById('se-bar-' + key);
+      var val = document.getElementById('se-val-' + key);
+      if (bar) bar.style.width = (value * 10) + '%';
+      if (val) val.textContent = value;
+    },
+
+    _txt: function (id, text) {
+      var el = document.getElementById(id); if (el) el.textContent = text;
+    }
+  };
+
+  // O cliente principal sinaliza quando o bootstrap autenticado terminou.
+  // Assim o painel não consulta dados públicos nem aparece sobre o login.
+  window.addEventListener('sobre-encantos:session-ready', function () { SE_Exp.init(); });
+  window.addEventListener('sobre-encantos:session-ended', function () { SE_Exp.reset(); });
+
+  // Preview local sem JavaScript.html: preserva a experiência offline usada
+  // para revisar a interface, sem interferir no fluxo autenticado.
+  document.addEventListener('DOMContentLoaded', function () {
+    if (!window.SobreEncantosBackend) SE_Exp.init();
+  });
+  window.SobreEncantos_Experience = SE_Exp;
+
+  // ── Suporte a teclado — Sobre Encantos MainMenu ─────────────────────────
+  document.addEventListener('keydown', function (event) {
+    if (['TEXTAREA', 'INPUT', 'SELECT'].indexOf(document.activeElement ? document.activeElement.tagName : '') !== -1) return;
+    var key = event.key;
+    if (key === 'Escape') {
+      var panel = document.getElementById('se-experience-panel');
+      if (panel && panel.style.display !== 'none' && panel.offsetParent !== null) {
+        event.preventDefault();
+        panel.style.display = 'none';
+        return;
+      }
+    }
+    // Teclas 1–3 para decisões
+    if (key >= '1' && key <= '3' && !event.ctrlKey && !event.altKey) {
+      var idx = parseInt(key, 10);
+      var decBtns = Array.prototype.filter.call(
+        document.querySelectorAll('#se-decisions button, .ep-dec-btn'),
+        function(el) { return el.offsetParent !== null && !el.disabled; }
+      );
+      if (decBtns[idx - 1]) { event.preventDefault(); decBtns[idx - 1].click(); return; }
+    }
+    // Setas para navegação entre decisões
+    if (key === 'ArrowDown' || key === 'ArrowRight') {
+      var allBtns = Array.prototype.filter.call(document.querySelectorAll('#se-decisions button, .ep-dec-btn'), function(el) { return el.offsetParent !== null && !el.disabled; });
+      var cur = allBtns.indexOf(document.activeElement);
+      if (cur >= 0 && cur < allBtns.length - 1) { event.preventDefault(); allBtns[cur + 1].focus(); }
+      return;
+    }
+    if (key === 'ArrowUp' || key === 'ArrowLeft') {
+      var allBtns2 = Array.prototype.filter.call(document.querySelectorAll('#se-decisions button, .ep-dec-btn'), function(el) { return el.offsetParent !== null && !el.disabled; });
+      var cur2 = allBtns2.indexOf(document.activeElement);
+      if (cur2 > 0) { event.preventDefault(); allBtns2[cur2 - 1].focus(); }
+    }
+  });
+})();
+</script>

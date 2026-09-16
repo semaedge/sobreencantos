@@ -1,0 +1,164 @@
+<!--
+  Debug.html
+  Pagina de verificacao da API, servida em ?page=Debug. Nao e o jogo: chama uma
+  api_* por botao e mostra o envelope cru da resposta. Util para checar o
+  backend apos o deploy sem passar pelo fluxo do jogo.
+-->
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <meta charset="utf-8">
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; padding: 24px;
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+        background: #10151c; color: #e6edf3;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      p.sub { margin: 0 0 24px; color: #8b98a5; }
+      fieldset {
+        border: 1px solid #2a3441; border-radius: 8px;
+        margin: 0 0 16px; padding: 16px;
+      }
+      legend { color: #7ee787; font-weight: 600; padding: 0 6px; }
+      label { display: block; margin-bottom: 8px; }
+      input {
+        width: 220px; padding: 6px 8px; margin-left: 8px;
+        border: 1px solid #2a3441; border-radius: 4px;
+        background: #0d1117; color: #e6edf3;
+      }
+      button {
+        padding: 7px 14px; margin: 4px 6px 4px 0;
+        border: 0; border-radius: 4px; cursor: pointer;
+        background: #238636; color: #fff; font-weight: 600;
+      }
+      button:disabled { opacity: .5; cursor: default; }
+      pre {
+        background: #0d1117; border: 1px solid #2a3441; border-radius: 6px;
+        padding: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap;
+      }
+      .status { font-weight: 600; }
+      .ok { color: #7ee787; }
+      .err { color: #ff7b72; }
+    </style>
+    <style id="fleet-mobile-wcag-aa">
+    /* Contrato FROTA: ergonomia S20 e WCAG 2.1 AA. */
+    html, body { max-width: 100%; overflow-x: hidden; }
+    :is(button, [role="button"], input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) {
+      min-width: 48px !important;
+      min-height: 48px !important;
+      touch-action: manipulation;
+    }
+  </style>
+</head>
+  <body>
+    <h1>Sobre Encantos — verificacao do backend</h1>
+    <p class="sub">Chama as funcoes de RemoteFunctions.gs via google.script.run.</p>
+
+    <fieldset>
+      <legend>Conta</legend>
+      <label>Usuario <input inputmode="text" id="username" value="jogador1" autocomplete="username"></label>
+      <label>Senha <input inputmode="text" id="password" type="password" value="senha1234" autocomplete="current-password"></label>
+      <button id="btnRegister">Registrar</button>
+      <button id="btnLogin">Entrar</button>
+      <button id="btnLogout" disabled>Sair</button>
+      <p>Sessao: <span id="sessionStatus" class="status err">desconectado</span></p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Chamadas</legend>
+      <button id="btnGameData">Dados do jogo</button>
+      <button id="btnProfile" disabled>Meu perfil</button>
+      <button id="btnLevels" disabled>Niveis</button>
+      <button id="btnPlay" disabled>Jogar nivel 1</button>
+      <button id="btnStats" disabled>Estatisticas</button>
+      <button id="btnLeaderboard">Ranking</button>
+    </fieldset>
+
+    <pre id="output">Pronto.</pre>
+
+    <script>
+      var token = null;
+
+      function show(label, value) {
+        document.getElementById('output').textContent =
+            label + '\n\n' + JSON.stringify(value, null, 2);
+      }
+
+      /** Chama uma api_* do backend e trata o envelope de resposta. */
+      function call(name, args, label, onSuccess) {
+        document.getElementById('output').textContent = label + ': aguardando...';
+        google.script.run
+            .withSuccessHandler(function (response) {
+              show(label + (response.ok ? ' (ok)' : ' (erro)'),
+                   response.ok ? response.data : response.error);
+              if (response.ok && onSuccess) onSuccess(response.data);
+            })
+            .withFailureHandler(function (err) {
+              show(label + ' (falha de transporte)', String(err && err.message || err));
+            })[name].apply(null, args);
+      }
+
+      function setSignedIn(signedIn, username) {
+        var status = document.getElementById('sessionStatus');
+        status.textContent = signedIn ? 'conectado como ' + username : 'desconectado';
+        status.className = 'status ' + (signedIn ? 'ok' : 'err');
+        ['btnProfile', 'btnLevels', 'btnPlay', 'btnStats', 'btnLogout'].forEach(function (id) {
+          document.getElementById(id).disabled = !signedIn;
+        });
+      }
+
+      function field(id) { return document.getElementById(id).value; }
+
+      document.getElementById('btnRegister').onclick = function () {
+        call('api_register', [field('username'), field('password')], 'Registro');
+      };
+
+      document.getElementById('btnLogin').onclick = function () {
+        call('api_login', [field('username'), field('password')], 'Login', function (data) {
+          token = data.token;
+          setSignedIn(true, data.user.username);
+        });
+      };
+
+      document.getElementById('btnLogout').onclick = function () {
+        call('api_logout', [token], 'Logout', function () {
+          token = null;
+          setSignedIn(false);
+        });
+      };
+
+      document.getElementById('btnGameData').onclick = function () {
+        call('api_getGameData', [], 'Dados do jogo');
+      };
+
+      document.getElementById('btnProfile').onclick = function () {
+        call('api_getProfile', [token], 'Perfil');
+      };
+
+      document.getElementById('btnLevels').onclick = function () {
+        call('api_getLevelSelection', [token], 'Niveis');
+      };
+
+      document.getElementById('btnStats').onclick = function () {
+        call('api_getMyStats', [token], 'Estatisticas');
+      };
+
+      document.getElementById('btnLeaderboard').onclick = function () {
+        call('api_getLeaderboard', [10], 'Ranking');
+      };
+
+      // Partida simulada: inicia o nivel 1 e envia um resultado de exemplo.
+      document.getElementById('btnPlay').onclick = function () {
+        call('api_startGame', [token, 1], 'Inicio de partida', function () {
+          call('api_endGame',
+               [token, { score: 850, distance: 1200, coins: 12, completed: true }],
+               'Fim de partida');
+        });
+      };
+    </script>
+  </body>
+</html>
